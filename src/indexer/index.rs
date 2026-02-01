@@ -1,6 +1,7 @@
 //! Index builder using tantivy for BM25 search
 
 use anyhow::{Context, Result};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -114,10 +115,19 @@ impl IndexBuilder {
         let mut new_metadata = IndexMetadata::default();
 
         // Process files in parallel and collect results
+        let pb = ProgressBar::new(total_files as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{bar:40.cyan/blue}] {pos}/{len} files | Indexing {msg}")
+                .expect("valid progress bar template")
+                .progress_chars("##."),
+        );
         let processed_files: Vec<_> = files
             .par_iter()
+            .progress_with(pb.clone())
             .filter_map(|file| {
                 let path_str = file.path.to_string_lossy().to_string();
+                pb.set_message(path_str.clone());
 
                 // Get file mtime
                 let mtime = std::fs::metadata(&file.path)
@@ -156,6 +166,8 @@ impl IndexBuilder {
                 Some((path_str, mtime, Some((file.content.clone(), lang_str, symbols))))
             })
             .collect();
+
+        pb.finish_and_clear();
 
         // Add documents to index (must be sequential)
         for (path_str, mtime, doc_data) in &processed_files {

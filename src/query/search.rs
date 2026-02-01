@@ -9,8 +9,8 @@ use std::io::{BufRead, BufReader};
 use std::time::Instant;
 use tantivy::{
     collector::TopDocs,
-    query::QueryParser,
-    schema::Value,
+    query::{BooleanQuery, FuzzyTermQuery, Occur, QueryParser},
+    schema::{Term, Value},
     Index, TantivyDocument,
 };
 
@@ -42,6 +42,7 @@ pub fn run(
     glob_pattern: Option<&str>,
     exclude_pattern: Option<&str>,
     quiet: bool,
+    fuzzy: bool,
     format: OutputFormat,
 ) -> Result<()> {
     let start_time = Instant::now();
@@ -78,9 +79,36 @@ pub fn run(
     let path_field = schema.get_field("path").context("Missing path field")?;
     let symbols_field = schema.get_field("symbols").context("Missing symbols field")?;
 
-    // Search in both content and symbols
-    let query_parser = QueryParser::for_index(&index, vec![content_field, symbols_field]);
-    let parsed_query = query_parser.parse_query(query)?;
+    // Build query: fuzzy or regular
+    let parsed_query: Box<dyn tantivy::query::Query> = if fuzzy {
+        // Fuzzy search with edit distance 1-2 based on term length
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        if terms.is_empty() {
+            anyhow::bail!("Fuzzy search requires at least one search term");
+        }
+        let mut fuzzy_queries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
+        
+        for term in terms {
+            // Use distance 1 for short terms, 2 for longer terms
+            let distance = if term.len() <= 4 { 1 } else { 2 };
+            
+            // Search in content field
+            let content_term = Term::from_field_text(content_field, term);
+            let content_fuzzy = FuzzyTermQuery::new(content_term, distance, true);
+            fuzzy_queries.push((Occur::Should, Box::new(content_fuzzy)));
+            
+            // Search in symbols field
+            let symbols_term = Term::from_field_text(symbols_field, term);
+            let symbols_fuzzy = FuzzyTermQuery::new(symbols_term, distance, true);
+            fuzzy_queries.push((Occur::Should, Box::new(symbols_fuzzy)));
+        }
+        
+        Box::new(BooleanQuery::new(fuzzy_queries))
+    } else {
+        // Regular BM25 search in both content and symbols
+        let query_parser = QueryParser::for_index(&index, vec![content_field, symbols_field]);
+        Box::new(query_parser.parse_query(query)?)
+    };
 
     // Get more results than needed for filtering
     let fetch_limit = max_results * 5;

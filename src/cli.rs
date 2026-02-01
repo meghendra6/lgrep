@@ -60,7 +60,9 @@ pub enum Commands {
         /// Suppress statistics output
         #[arg(short = 'q', long)]
         quiet: bool,
-    },
+        /// Enable fuzzy matching (allows 1-2 character differences)
+        #[arg(short = 'f', long)]
+        fuzzy: bool,    },
 
     /// Search for symbols (functions, classes, etc.)
     Symbols {
