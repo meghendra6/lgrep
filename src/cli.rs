@@ -66,6 +66,18 @@ pub enum Commands {
         /// Enable fuzzy matching (allows 1-2 character differences)
         #[arg(short = 'f', long)]
         fuzzy: bool,
+
+        /// Do not use the index; scan files directly
+        #[arg(long)]
+        no_index: bool,
+
+        /// Treat query as a regular expression (scan mode)
+        #[arg(long)]
+        regex: bool,
+
+        /// Case-sensitive search (scan mode)
+        #[arg(long)]
+        case_sensitive: bool,
     },
 
     /// Search for symbols (functions, classes, etc.)
