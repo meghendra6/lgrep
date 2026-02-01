@@ -18,11 +18,11 @@ fn main() -> Result<()> {
     let format = cli.format;
 
     match cli.command {
-        Commands::Search { query, path, max_results, context } => {
-            query::search::run(&query, path.as_deref(), max_results, context, format)?;
+        Commands::Search { query, path, max_results, context, file_type, glob, exclude, quiet } => {
+            query::search::run(&query, path.as_deref(), max_results, context, file_type.as_deref(), glob.as_deref(), exclude.as_deref(), quiet, format)?;
         }
-        Commands::Symbols { name, symbol_type, lang } => {
-            query::symbols::run(&name, symbol_type.as_deref(), lang.as_deref(), format)?;
+        Commands::Symbols { name, symbol_type, lang, file_type, glob, exclude, quiet } => {
+            query::symbols::run(&name, symbol_type.as_deref(), lang.as_deref(), file_type.as_deref(), glob.as_deref(), exclude.as_deref(), quiet, format)?;
         }
         Commands::Definition { name } => {
             query::definition::run(&name, format)?;

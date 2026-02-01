@@ -41,9 +41,25 @@ pub enum Commands {
         #[arg(short, long, default_value = "20")]
         max_results: usize,
 
-        /// Include surrounding context lines
-        #[arg(short, long, default_value = "3")]
+        /// Show N lines before and after each match (like grep -C)
+        #[arg(short = 'C', long, default_value = "0")]
         context: usize,
+
+        /// Filter by file type/language (e.g., rust, ts, python)
+        #[arg(short = 't', long = "type")]
+        file_type: Option<String>,
+
+        /// Filter files matching glob pattern (e.g., "*.rs", "src/**/*.ts")
+        #[arg(short = 'g', long)]
+        glob: Option<String>,
+
+        /// Exclude files matching pattern
+        #[arg(long)]
+        exclude: Option<String>,
+
+        /// Suppress statistics output
+        #[arg(short = 'q', long)]
+        quiet: bool,
     },
 
     /// Search for symbols (functions, classes, etc.)
@@ -52,12 +68,28 @@ pub enum Commands {
         name: String,
 
         /// Filter by symbol type (function, class, variable, etc.)
-        #[arg(short = 't', long = "type")]
+        #[arg(short = 'T', long = "type")]
         symbol_type: Option<String>,
 
         /// Filter by language (typescript, python, rust, etc.)
         #[arg(short, long)]
         lang: Option<String>,
+
+        /// Filter by file type/language (e.g., rust, ts, python)
+        #[arg(short = 't', long = "file-type")]
+        file_type: Option<String>,
+
+        /// Filter files matching glob pattern (e.g., "*.rs", "src/**/*.ts")
+        #[arg(short = 'g', long)]
+        glob: Option<String>,
+
+        /// Exclude files matching pattern
+        #[arg(long)]
+        exclude: Option<String>,
+
+        /// Suppress statistics output
+        #[arg(short = 'q', long)]
+        quiet: bool,
     },
 
     /// Find symbol definition location

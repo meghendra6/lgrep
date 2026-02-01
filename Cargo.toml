@@ -8,6 +8,10 @@ authors = ["lgrep contributors"]
 keywords = ["search", "code", "ast", "grep"]
 categories = ["command-line-utilities", "development-tools"]
 
+[lib]
+name = "lgrep"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lgrep"
 path = "src/main.rs"
