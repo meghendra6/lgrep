@@ -6,9 +6,10 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use serde::de::Deserializer;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::SystemTime;
@@ -54,7 +55,8 @@ impl Default for FileMetadata {
 }
 
 impl FileMetadata {
-    fn legacy(mtime: u64) -> Self {
+    fn legacy(mtime_secs: u64) -> Self {
+        let mtime = mtime_secs.saturating_mul(1_000_000_000);
         Self {
             mtime,
             ..Self::default()
@@ -86,12 +88,58 @@ where
         .collect())
 }
 
-fn compute_hash(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
+enum ReadOutcome {
+    Text { content: String, hash: String },
+    Binary { hash: Option<String> },
 }
 
-fn is_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|&b| b == 0)
+fn read_text_or_binary(path: &Path) -> Result<ReadOutcome> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut bytes: Vec<u8> = Vec::new();
+
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+
+        if buffer[..read].iter().any(|&b| b == 0) {
+            return Ok(ReadOutcome::Binary { hash: None });
+        }
+
+        hasher.update(&buffer[..read]);
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+
+    let hash = hasher.finalize().to_hex().to_string();
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(ReadOutcome::Text { content, hash }),
+        Err(_) => Ok(ReadOutcome::Binary { hash: Some(hash) }),
+    }
+}
+
+fn should_skip_without_read(
+    existing_meta: Option<&FileMetadata>,
+    mtime: u64,
+    size: u64,
+    force: bool,
+) -> Option<FileMetadata> {
+    if force {
+        return None;
+    }
+
+    let meta = existing_meta?;
+    if meta.is_binary && meta.mtime == mtime && meta.size == size {
+        return Some(meta.clone());
+    }
+
+    if !meta.hash.is_empty() && meta.mtime == mtime && meta.size == size {
+        return Some(meta.clone());
+    }
+
+    None
 }
 
 /// Tantivy field handles
@@ -225,33 +273,20 @@ impl IndexBuilder {
                         .modified()
                         .ok()
                         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
+                        .map(|d| d.as_nanos() as u64)
                         .unwrap_or(0);
                     let size = metadata.len();
 
                     let existing_meta = old_metadata.files.get(&path_str).cloned();
 
-                    let needs_indexing = if force {
-                        true
-                    } else if let Some(meta) = existing_meta.as_ref() {
-                        if !meta.hash.is_empty() && meta.mtime == mtime && meta.size == size {
-                            false
-                        } else {
-                            true
-                        }
-                    } else {
-                        true
-                    };
-
-                    if !needs_indexing {
-                        let meta = existing_meta.unwrap_or_else(|| FileMetadata::legacy(mtime));
+                    if let Some(meta) = should_skip_without_read(existing_meta.as_ref(), mtime, size, force) {
                         let _ = tx.send(ProcessedFile::Skipped { path: path_str, meta });
                         pb_producer.inc(1);
                         return;
                     }
 
-                    let bytes = match std::fs::read(path) {
-                        Ok(bytes) => bytes,
+                    let outcome = match read_text_or_binary(path) {
+                        Ok(outcome) => outcome,
                         Err(_) => {
                             let _ = tx.send(ProcessedFile::ReadError { path: path_str, fallback: existing_meta });
                             pb_producer.inc(1);
@@ -259,39 +294,13 @@ impl IndexBuilder {
                         }
                     };
 
-                    let hash = compute_hash(&bytes);
-
-                    if let Some(meta) = existing_meta.as_ref() {
-                        if !force && meta.hash == hash && !hash.is_empty() {
-                            let mut updated = meta.clone();
-                            updated.mtime = mtime;
-                            updated.size = size;
-                            let _ = tx.send(ProcessedFile::Skipped { path: path_str, meta: updated });
-                            pb_producer.inc(1);
-                            return;
-                        }
-                    }
-
-                    if is_binary(&bytes) {
-                        let meta = FileMetadata {
-                            mtime,
-                            size,
-                            hash,
-                            symbols: String::new(),
-                            is_binary: true,
-                        };
-                        let _ = tx.send(ProcessedFile::Skipped { path: path_str, meta });
-                        pb_producer.inc(1);
-                        return;
-                    }
-
-                    let content = match String::from_utf8(bytes) {
-                        Ok(content) => content,
-                        Err(_) => {
+                    let (content, hash, is_binary) = match outcome {
+                        ReadOutcome::Text { content, hash } => (content, hash, false),
+                        ReadOutcome::Binary { hash } => {
                             let meta = FileMetadata {
                                 mtime,
                                 size,
-                                hash,
+                                hash: hash.unwrap_or_default(),
                                 symbols: String::new(),
                                 is_binary: true,
                             };
@@ -300,6 +309,17 @@ impl IndexBuilder {
                             return;
                         }
                     };
+
+                    if let Some(meta) = existing_meta.as_ref() {
+                        if !force && !hash.is_empty() && meta.hash == hash {
+                            let mut updated = meta.clone();
+                            updated.mtime = mtime;
+                            updated.size = size;
+                            let _ = tx.send(ProcessedFile::Skipped { path: path_str, meta: updated });
+                            pb_producer.inc(1);
+                            return;
+                        }
+                    }
 
                     let lang_str = path
                         .extension()
@@ -340,7 +360,7 @@ impl IndexBuilder {
                         size,
                         hash,
                         symbols: symbols.clone(),
-                        is_binary: false,
+                        is_binary,
                     };
 
                     let mut doc = TantivyDocument::default();
@@ -479,9 +499,27 @@ mod tests {
         let first = builder.build(false).expect("first build");
         assert_eq!(first, 1);
 
+        std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(&file_path, "fn a() {}").expect("touch same content");
         let second = builder.build(false).expect("second build");
         assert_eq!(second, 0);
+    }
+
+    #[test]
+    fn content_change_reindexes() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        let file_path = root.join("change.rs");
+        std::fs::write(&file_path, "fn a() {}").expect("write one");
+
+        let builder = IndexBuilder::new(root).expect("builder");
+        let first = builder.build(false).expect("first build");
+        assert_eq!(first, 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&file_path, "fn b() {}").expect("write two");
+        let second = builder.build(false).expect("second build");
+        assert_eq!(second, 1);
     }
 
     #[test]
@@ -499,7 +537,7 @@ mod tests {
         let bin_key = root.join("bin.rs").to_string_lossy().to_string();
         let bin_meta = metadata.files.get(&bin_key).expect("bin meta");
         assert!(bin_meta.is_binary);
-        assert!(!bin_meta.hash.is_empty());
+        assert!(bin_meta.symbols.is_empty());
     }
 
     #[test]
@@ -516,6 +554,20 @@ mod tests {
         let bad_key = root.join("bad.rs").to_string_lossy().to_string();
         let meta = metadata.files.get(&bad_key).expect("meta");
         assert!(meta.is_binary);
+    }
+
+    #[test]
+    fn binary_files_skip_on_unchanged() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("bin.rs"), vec![0, 1, 2, 3]).expect("write bin");
+
+        let builder = IndexBuilder::new(root).expect("builder");
+        let first = builder.build(false).expect("first build");
+        assert_eq!(first, 0);
+
+        let second = builder.build(false).expect("second build");
+        assert_eq!(second, 0);
     }
 
     #[test]
