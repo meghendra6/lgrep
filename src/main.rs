@@ -39,6 +39,9 @@ fn main() -> Result<()> {
             exclude,
             quiet,
             fuzzy,
+            no_index,
+            regex,
+            case_sensitive,
         } => {
             query::search::run(
                 &query,
@@ -50,6 +53,9 @@ fn main() -> Result<()> {
                 exclude.as_deref(),
                 quiet,
                 fuzzy,
+                no_index,
+                regex,
+                case_sensitive,
                 format,
             )?;
         }

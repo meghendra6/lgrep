@@ -86,7 +86,12 @@ cgrep search <query> [options]
 | `--exclude <pattern>` | Exclude files matching pattern |
 | `-q, --quiet` | Suppress statistics output |
 | `-f, --fuzzy` | Enable fuzzy matching (allows 1-2 character differences) |
+| `--no-index` | Scan files directly without using the index |
+| `--regex` | Treat query as a regular expression (scan mode) |
+| `--case-sensitive` | Case-sensitive search (scan mode) |
 | `--format <text\|json>` | Output format |
+
+If the index does not exist, `cgrep search` automatically falls back to scan mode.
 
 ## Symbols Command Flags
 
