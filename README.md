@@ -14,6 +14,7 @@
 - **Fast** - ripgrep-level file scanning performance
 - **AST-aware** - Understands code structure (functions, classes, etc.)
 - **BM25 ranking** - Relevant results, not just pattern matches
+- **Incremental indexing** - Hash-based change detection with symbol cache; binary files skipped
 - **Multi-language** - TypeScript, JavaScript, Python, Rust, Go, C, C++, Java, Ruby
 - **Shell completions** - Tab completion for Bash, Zsh, Fish, PowerShell
 - **Agent integrations** - Works with Claude Code, Codex, Copilot, OpenCode
@@ -139,6 +140,8 @@ cgrep stores its index in `.cgrep/` directory in your project root. Add this to 
 ```
 .cgrep/
 ```
+
+Indexing uses file hashes to detect real content changes, caches extracted symbols, and skips binary files by content while still indexing large text/code files.
 
 ## Shell Completions
 
