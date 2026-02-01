@@ -15,6 +15,7 @@
 - **AST-aware** - Understands code structure (functions, classes, etc.)
 - **BM25 ranking** - Relevant results, not just pattern matches
 - **Incremental indexing** - Hash-based change detection (BLAKE3), symbol cache; binary files skipped by content
+- **Large file streaming** - Chunked indexing to keep memory usage low
 - **Multi-language** - TypeScript, JavaScript, Python, Rust, Go, C, C++, Java, Ruby
 - **Shell completions** - Tab completion for Bash, Zsh, Fish, PowerShell
 - **Agent integrations** - Works with Claude Code, Codex, Copilot, OpenCode
@@ -141,7 +142,7 @@ cgrep stores its index in `.cgrep/` directory in your project root. Add this to 
 .cgrep/
 ```
 
-Indexing uses BLAKE3 file hashes to detect real content changes, caches extracted symbols, and skips binary files by content (NUL/invalid UTF-8) while still indexing large text/code files.
+Indexing uses BLAKE3 file hashes to detect real content changes, caches extracted symbols, and skips binary files by content (NUL/invalid UTF-8) while still indexing large text/code files. Large files are chunked into smaller segments to keep memory usage low.
 
 ## Shell Completions
 

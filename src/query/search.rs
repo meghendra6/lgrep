@@ -339,6 +339,9 @@ fn index_search(
     let content_field = schema.get_field("content").context("Missing content field")?;
     let path_field = schema.get_field("path").context("Missing path field")?;
     let symbols_field = schema.get_field("symbols").context("Missing symbols field")?;
+    let line_offset_field = schema
+        .get_field("line_number")
+        .context("Missing line_number field")?;
 
     let parsed_query: Box<dyn tantivy::query::Query> = if fuzzy {
         let terms: Vec<&str> = query.split_whitespace().collect();
@@ -407,7 +410,13 @@ fn index_search(
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        let line_offset = doc
+            .get_first(line_offset_field)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as usize;
+
         let (snippet, line_num) = find_snippet_with_line(content_value, query, 150);
+        let line_num = line_num.map(|l| l + line_offset.saturating_sub(1));
 
         let (context_before, context_after) = if context > 0 && line_num.is_some() {
             get_context_lines(&root.join(path_value), line_num.unwrap(), context)

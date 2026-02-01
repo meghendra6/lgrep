@@ -6,10 +6,11 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::io::Read;
+use std::collections::{HashMap, HashSet};
+use std::io::BufRead;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::SystemTime;
@@ -88,36 +89,89 @@ where
         .collect())
 }
 
+#[cfg(test)]
+const MAX_DOC_BYTES: usize = 64 * 1024;
+#[cfg(not(test))]
+const MAX_DOC_BYTES: usize = 1024 * 1024;
+
+struct TextChunk {
+    start_line: u64,
+    content: String,
+}
+
 enum ReadOutcome {
-    Text { content: String, hash: String },
+    Text { chunks: Vec<TextChunk>, hash: String },
     Binary { hash: Option<String> },
 }
 
-fn read_text_or_binary(path: &Path) -> Result<ReadOutcome> {
-    let mut file = std::fs::File::open(path)?;
+fn read_text_chunks(path: &Path, max_doc_bytes: usize) -> Result<ReadOutcome> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut bytes: Vec<u8> = Vec::new();
+    let mut chunks: Vec<TextChunk> = Vec::new();
+    let mut current_chunk = String::new();
+    let mut chunk_start_line: u64 = 1;
+    let mut current_line: u64 = 0;
+    let mut line = String::new();
 
     loop {
-        let read = file.read(&mut buffer)?;
+        line.clear();
+        let read = match reader.read_line(&mut line) {
+            Ok(read) => read,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::InvalidData {
+                    return Ok(ReadOutcome::Binary { hash: None });
+                }
+                return Err(err.into());
+            }
+        };
         if read == 0 {
             break;
         }
 
-        if buffer[..read].iter().any(|&b| b == 0) {
+        current_line += 1;
+        if line.as_bytes().iter().any(|&b| b == 0) {
             return Ok(ReadOutcome::Binary { hash: None });
         }
 
-        hasher.update(&buffer[..read]);
-        bytes.extend_from_slice(&buffer[..read]);
+        hasher.update(line.as_bytes());
+
+        if current_chunk.len() + line.len() > max_doc_bytes && !current_chunk.is_empty() {
+            let content = std::mem::take(&mut current_chunk);
+            chunks.push(TextChunk {
+                start_line: chunk_start_line,
+                content,
+            });
+            chunk_start_line = current_line;
+        }
+
+        current_chunk.push_str(&line);
+    }
+
+    if !current_chunk.is_empty() {
+        chunks.push(TextChunk {
+            start_line: chunk_start_line,
+            content: current_chunk,
+        });
     }
 
     let hash = hasher.finalize().to_hex().to_string();
-    match String::from_utf8(bytes) {
-        Ok(content) => Ok(ReadOutcome::Text { content, hash }),
-        Err(_) => Ok(ReadOutcome::Binary { hash: Some(hash) }),
+    Ok(ReadOutcome::Text { chunks, hash })
+}
+
+fn extract_symbols_from_chunks(chunks: &[TextChunk], lang: &str) -> String {
+    let extractor = SymbolExtractor::new();
+    let mut seen = HashSet::new();
+
+    for chunk in chunks {
+        if let Ok(symbols) = extractor.extract(&chunk.content, lang) {
+            for symbol in symbols {
+                seen.insert(symbol.name);
+            }
+        }
     }
+
+    seen.into_iter().collect::<Vec<_>>().join(" ")
 }
 
 fn should_skip_without_read(
@@ -226,7 +280,7 @@ impl IndexBuilder {
 
         enum ProcessedFile {
             Skipped { path: String, meta: FileMetadata },
-            Indexed { path: String, meta: FileMetadata, doc: TantivyDocument },
+            Indexed { path: String, meta: FileMetadata, docs: Vec<TantivyDocument> },
             ReadError { path: String, fallback: Option<FileMetadata> },
         }
 
@@ -251,8 +305,18 @@ impl IndexBuilder {
         let content_field = self.fields.content;
         let language_field = self.fields.language;
         let symbols_field = self.fields.symbols;
+        let line_number_field = self.fields.line_number;
 
-        rayon::scope(|s| {
+        let io_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let io_threads = (io_threads * 2).clamp(4, 64);
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(io_threads)
+            .build()
+            .context("Failed to create indexing thread pool")?;
+
+        pool.scope(|s| {
             let tx_producer = tx.clone();
             let pb_producer = pb.clone();
             s.spawn(move |_| {
@@ -285,7 +349,7 @@ impl IndexBuilder {
                         return;
                     }
 
-                    let outcome = match read_text_or_binary(path) {
+                    let outcome = match read_text_chunks(path, MAX_DOC_BYTES) {
                         Ok(outcome) => outcome,
                         Err(_) => {
                             let _ = tx.send(ProcessedFile::ReadError { path: path_str, fallback: existing_meta });
@@ -294,8 +358,8 @@ impl IndexBuilder {
                         }
                     };
 
-                    let (content, hash, is_binary) = match outcome {
-                        ReadOutcome::Text { content, hash } => (content, hash, false),
+                    let (chunks, hash) = match outcome {
+                        ReadOutcome::Text { chunks, hash } => (chunks, hash),
                         ReadOutcome::Binary { hash } => {
                             let meta = FileMetadata {
                                 mtime,
@@ -332,24 +396,10 @@ impl IndexBuilder {
                             if meta.hash == hash {
                                 meta.symbols.clone()
                             } else {
-                                let extractor = SymbolExtractor::new();
-                                extractor
-                                    .extract(&content, &lang_str)
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|s| s.name)
-                                    .collect::<Vec<_>>()
-                                    .join(" ")
+                                extract_symbols_from_chunks(&chunks, &lang_str)
                             }
                         } else {
-                            let extractor = SymbolExtractor::new();
-                            extractor
-                                .extract(&content, &lang_str)
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(|s| s.name)
-                                .collect::<Vec<_>>()
-                                .join(" ")
+                            extract_symbols_from_chunks(&chunks, &lang_str)
                         }
                     } else {
                         String::new()
@@ -360,19 +410,30 @@ impl IndexBuilder {
                         size,
                         hash,
                         symbols: symbols.clone(),
-                        is_binary,
+                        is_binary: false,
                     };
 
-                    let mut doc = TantivyDocument::default();
-                    doc.add_text(path_field, &path_str);
-                    doc.add_text(content_field, &content);
-                    doc.add_text(language_field, &lang_str);
-                    doc.add_text(symbols_field, &symbols);
+                    if chunks.is_empty() {
+                        let _ = tx.send(ProcessedFile::Skipped { path: path_str, meta });
+                        pb_producer.inc(1);
+                        return;
+                    }
+
+                    let mut docs: Vec<TantivyDocument> = Vec::with_capacity(chunks.len());
+                    for chunk in &chunks {
+                        let mut doc = TantivyDocument::default();
+                        doc.add_text(path_field, &path_str);
+                        doc.add_text(content_field, &chunk.content);
+                        doc.add_text(language_field, &lang_str);
+                        doc.add_text(symbols_field, &symbols);
+                        doc.add_u64(line_number_field, chunk.start_line);
+                        docs.push(doc);
+                    }
 
                     let _ = tx.send(ProcessedFile::Indexed {
                         path: path_str,
                         meta,
-                        doc,
+                        docs,
                     });
                     pb_producer.inc(1);
                 });
@@ -385,10 +446,13 @@ impl IndexBuilder {
                         skipped_count += 1;
                         new_metadata.files.insert(path, meta);
                     }
-                    ProcessedFile::Indexed { path, meta, doc } => {
+                    ProcessedFile::Indexed { path, meta, docs } => {
                         if indexing_error.is_none() {
-                            if let Err(err) = writer.add_document(doc) {
-                                indexing_error = Some(err.into());
+                            for doc in docs {
+                                if let Err(err) = writer.add_document(doc) {
+                                    indexing_error = Some(err.into());
+                                    break;
+                                }
                             }
                         }
                         indexed_count += 1;
@@ -584,5 +648,24 @@ mod tests {
         let lib_key = root.join("lib.rs").to_string_lossy().to_string();
         let meta = metadata.files.get(&lib_key).expect("meta");
         assert!(meta.symbols.contains("cached_symbol"));
+    }
+
+    #[test]
+    fn chunking_records_line_offsets() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        let file_path = root.join("chunk.rs");
+        let content = "line1\nline2\nline3\nline4\n";
+        std::fs::write(&file_path, content).expect("write");
+
+        let outcome = read_text_chunks(&file_path, 12).expect("chunk");
+        let chunks = match outcome {
+            ReadOutcome::Text { chunks, .. } => chunks,
+            ReadOutcome::Binary { .. } => panic!("expected text"),
+        };
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[1].start_line, 3);
     }
 }
