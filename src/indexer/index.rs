@@ -4,12 +4,12 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::SystemTime;
 use tantivy::{
     schema::{Field, Schema, STORED, TEXT},
@@ -111,12 +111,20 @@ impl IndexBuilder {
         let files = scanner.list_files()?;
         let total_files = files.len();
 
-        // Track counters
-        let indexed_count = AtomicUsize::new(0);
-        let skipped_count = AtomicUsize::new(0);
-        let mut new_metadata = IndexMetadata::default();
+        enum ProcessedFile {
+            Skipped { path: String, mtime: u64 },
+            Indexed { path: String, mtime: u64, doc: TantivyDocument },
+            ReadError { path: String },
+        }
 
-        // Process files in parallel and collect results
+        let mut new_metadata = IndexMetadata {
+            files: HashMap::with_capacity(total_files),
+        };
+        let mut indexed_count = 0usize;
+        let mut skipped_count = 0usize;
+        let mut error_count = 0usize;
+        let mut indexing_error: Option<anyhow::Error> = None;
+
         let pb = ProgressBar::new(total_files as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -124,77 +132,108 @@ impl IndexBuilder {
                 .expect("valid progress bar template")
                 .progress_chars("##."),
         );
-        let processed_files: Vec<_> = files
-            .par_iter()
-            .progress_with(pb.clone())
-            .filter_map(|path| {
-                let path_str = path.to_string_lossy().to_string();
-                pb.set_message(path_str.clone());
 
-                // Get file mtime
-                let mtime = std::fs::metadata(path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+        let (tx, rx) = mpsc::sync_channel::<ProcessedFile>(64);
+        let path_field = self.fields.path;
+        let content_field = self.fields.content;
+        let language_field = self.fields.language;
+        let symbols_field = self.fields.symbols;
 
-                // Check if file needs re-indexing
-                let needs_indexing =
-                    force || old_metadata.files.get(&path_str).copied() != Some(mtime);
+        rayon::scope(|s| {
+            let tx_producer = tx.clone();
+            let pb_producer = pb.clone();
+            s.spawn(move |_| {
+                files.par_iter().for_each_with(tx_producer, |tx, path| {
+                    let path_str = path.to_string_lossy().to_string();
+                    pb_producer.set_message(path_str.clone());
 
-                if !needs_indexing {
-                    skipped_count.fetch_add(1, Ordering::Relaxed);
-                    return Some((path_str, mtime, None));
+                    let mtime = std::fs::metadata(path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+
+                    let needs_indexing =
+                        force || old_metadata.files.get(&path_str).copied() != Some(mtime);
+
+                    if !needs_indexing {
+                        let _ = tx.send(ProcessedFile::Skipped { path: path_str, mtime });
+                        pb_producer.inc(1);
+                        return;
+                    }
+
+                    let content = match std::fs::read_to_string(path) {
+                        Ok(content) => content,
+                        Err(_) => {
+                            let _ = tx.send(ProcessedFile::ReadError { path: path_str });
+                            pb_producer.inc(1);
+                            return;
+                        }
+                    };
+
+                    let lang_str = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .and_then(detect_language)
+                        .unwrap_or_default();
+
+                    let symbols = if !lang_str.is_empty() {
+                        let extractor = SymbolExtractor::new();
+                        extractor
+                            .extract(&content, &lang_str)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|s| s.name)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    } else {
+                        String::new()
+                    };
+
+                    let mut doc = TantivyDocument::default();
+                    doc.add_text(path_field, &path_str);
+                    doc.add_text(content_field, &content);
+                    doc.add_text(language_field, &lang_str);
+                    doc.add_text(symbols_field, &symbols);
+
+                    let _ = tx.send(ProcessedFile::Indexed {
+                        path: path_str,
+                        mtime,
+                        doc,
+                    });
+                    pb_producer.inc(1);
+                });
+            });
+
+            drop(tx);
+            for msg in rx {
+                match msg {
+                    ProcessedFile::Skipped { path, mtime } => {
+                        skipped_count += 1;
+                        new_metadata.files.insert(path, mtime);
+                    }
+                    ProcessedFile::Indexed { path, mtime, doc } => {
+                        if indexing_error.is_none() {
+                            if let Err(err) = writer.add_document(doc) {
+                                indexing_error = Some(err.into());
+                            }
+                        }
+                        indexed_count += 1;
+                        new_metadata.files.insert(path, mtime);
+                    }
+                    ProcessedFile::ReadError { path } => {
+                        error_count += 1;
+                        eprintln!("Warning: failed to read {}", path);
+                    }
                 }
-
-                let content = match std::fs::read_to_string(path) {
-                    Ok(content) => content,
-                    Err(_) => return None,
-                };
-
-                let lang_str = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .and_then(detect_language)
-                    .unwrap_or_default();
-
-                // Extract symbols using tree-sitter (thread-safe via new extractor per file)
-                let symbols = if !lang_str.is_empty() {
-                    let extractor = SymbolExtractor::new();
-                    extractor
-                        .extract(&content, &lang_str)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|s| s.name)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                } else {
-                    String::new()
-                };
-
-                indexed_count.fetch_add(1, Ordering::Relaxed);
-
-                Some((path_str, mtime, Some((content, lang_str, symbols))))
-            })
-            .collect();
+            }
+        });
 
         pb.finish_and_clear();
 
-        // Add documents to index (must be sequential)
-        for (path_str, mtime, doc_data) in &processed_files {
-            if let Some((content, lang_str, symbols)) = doc_data {
-                let mut doc = TantivyDocument::default();
-                doc.add_text(self.fields.path, path_str);
-                doc.add_text(self.fields.content, content);
-                doc.add_text(self.fields.language, lang_str);
-                doc.add_text(self.fields.symbols, symbols);
-
-                writer.add_document(doc)?;
-            }
-
-            // Always update metadata
-            new_metadata.files.insert(path_str.clone(), *mtime);
+        if let Some(err) = indexing_error {
+            return Err(err);
         }
 
         writer.commit()?;
@@ -203,8 +242,12 @@ impl IndexBuilder {
         let metadata_json = serde_json::to_string_pretty(&new_metadata)?;
         std::fs::write(&metadata_path, metadata_json)?;
 
-        let indexed = indexed_count.load(Ordering::Relaxed);
-        let skipped = skipped_count.load(Ordering::Relaxed);
+        let indexed = indexed_count;
+        let skipped = skipped_count;
+
+        if error_count > 0 {
+            eprintln!("Warning: {} files could not be read", error_count);
+        }
 
         if skipped > 0 {
             println!(
@@ -241,4 +284,25 @@ pub fn run(path: Option<&str>, force: bool) -> Result<()> {
 
     println!("Index complete: {} files", count);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn incremental_index_skips_unchanged_files() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("one.rs"), "fn a() {}").expect("write one");
+        std::fs::write(root.join("two.txt"), "hello").expect("write two");
+
+        let builder = IndexBuilder::new(root).expect("builder");
+        let first = builder.build(false).expect("first build");
+        assert_eq!(first, 2);
+
+        let second = builder.build(false).expect("second build");
+        assert_eq!(second, 0);
+    }
 }

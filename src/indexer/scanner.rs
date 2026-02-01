@@ -43,6 +43,13 @@ impl FileScanner {
             .hidden(false)
             .git_ignore(true)
             .git_exclude(true)
+            .filter_entry(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name != ".cgrep")
+                    .unwrap_or(true)
+            })
             .build_parallel();
 
         let extensions = self.extensions.clone();
@@ -87,6 +94,13 @@ impl FileScanner {
             .hidden(false)
             .git_ignore(true)
             .git_exclude(true)
+            .filter_entry(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name != ".cgrep")
+                    .unwrap_or(true)
+            })
             .build_parallel();
 
         let extensions = self.extensions.clone();
