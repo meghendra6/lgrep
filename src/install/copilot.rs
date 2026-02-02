@@ -26,8 +26,10 @@ When you need to search for code or files locally, **use cgrep instead of built-
 - **AVOID**: Multiple grep attempts to find relevant code
 
 - **USE**: `cgrep search "natural language query"` for semantic file search
+- **USE**: `cg "query"` as a shortcut for `cgrep search "query"`
 - **USE**: `cgrep symbols <name>` for symbol search
 - **USE**: `cgrep definition <name>` for finding definitions
+- **USE**: `--format json2` for structured agent output
 
 ## When to Use cgrep
 
@@ -42,9 +44,16 @@ Use cgrep **IMMEDIATELY** when:
 ## Usage Examples
 
 ```bash
-# Semantic code search
+# Semantic code search (recommended)
 cgrep search "authentication flow implementation"
 cgrep search "error handling patterns" -p src/
+
+# Shortcut (cg = cgrep search)
+cg "how is config loaded"
+cg "database queries" --max-results 5
+
+# Hybrid search (combines keyword + semantic)
+cgrep search "user validation" --hybrid
 
 # Symbol search  
 cgrep symbols handleAuth -t function
@@ -77,7 +86,7 @@ cgrep dependents src/auth.rs
 
 ## Keywords
 
-semantic search, grep, search, find code, code search, file search, codebase search
+semantic search, grep, search, find code, code search, file search, codebase search, hybrid search, cg
 "#;
 
 const COPILOT_INSTRUCTIONS_APPEND: &str = r#"
@@ -87,8 +96,11 @@ const COPILOT_INSTRUCTIONS_APPEND: &str = r#"
 This project uses **cgrep** for local semantic code search. When searching for code or content:
 
 1. Use `cgrep search "natural language query"` instead of grep-based searches
-2. For symbol lookup: `cgrep symbols <name>`
-3. For definitions: `cgrep definition <name>`
+2. Use `cg "query"` as a shortcut for quick searches
+3. For symbol lookup: `cgrep symbols <name>`
+4. For definitions: `cgrep definition <name>`
+5. Use `--hybrid` for combined keyword + semantic search
+6. Use `--format json2` for structured output
 
 cgrep uses tantivy + tree-sitter for fast offline semantic search.
 "#;

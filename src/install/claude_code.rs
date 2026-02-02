@@ -25,6 +25,8 @@ Use `cgrep` for fast local semantic code search instead of built-in grep.
 ```bash
 cgrep search "authentication flow"       # semantic search
 cgrep search "error handling" -m 10      # limit results
+cg "config validation"                   # shortcut
+cgrep search "user auth" --hybrid        # hybrid search
 cgrep symbols MyClass                     # find symbol definitions
 cgrep definition handleClick              # find function definition
 ```

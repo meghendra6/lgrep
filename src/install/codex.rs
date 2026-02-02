@@ -29,6 +29,8 @@ Use `cgrep search` to search local files. The search is semantic - describe what
 ```bash
 cgrep search "What code parsers are available?"
 cgrep search "How are chunks defined?" -m 10
+cg "config validation" --max-results 5
+cgrep search "user authentication" --hybrid
 cgrep symbols MyFunction -t function
 cgrep definition MyClass
 cgrep callers process_request
@@ -39,6 +41,9 @@ cgrep callers process_request
 - `-m, --max <n>` - Limit number of results (default: 20)
 - `-c, --context <n>` - Context lines around matches (default: 3)
 - `-p, --path <path>` - Search in specific directory
+- `--hybrid` - Use hybrid search (BM25 + vector)
+- `--format json2` - Structured JSON output for agents
+- `--agent-cache` - Enable result caching
 "#;
 
 fn get_agents_md_path() -> Result<PathBuf> {
