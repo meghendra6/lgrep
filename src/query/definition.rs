@@ -81,7 +81,7 @@ pub fn run(name: &str, format: OutputFormat) -> Result<()> {
         .collect();
 
     match format {
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Json2 => {
             println!("{}", serde_json::to_string_pretty(&results)?);
         }
         OutputFormat::Text => {

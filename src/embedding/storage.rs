@@ -90,8 +90,9 @@ impl EmbeddingStorage {
 
     /// Initializes the database schema if it does not exist.
     fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
+        self.conn
+            .execute_batch(
+                r#"
             CREATE TABLE IF NOT EXISTS embedding_chunks (
                 id INTEGER PRIMARY KEY,
                 path TEXT NOT NULL,
@@ -117,7 +118,8 @@ impl EmbeddingStorage {
                 value TEXT NOT NULL
             );
             "#,
-        ).context("Failed to initialize database schema")?;
+            )
+            .context("Failed to initialize database schema")?;
 
         self.set_meta_if_absent("schema_version", "1")?;
         Ok(())
@@ -221,34 +223,38 @@ impl EmbeddingStorage {
 
     /// Deletes all embedding chunks for a given file path.
     pub fn delete_file_chunks(&self, path: &str) -> Result<usize> {
-        let deleted = self.conn.execute(
-            "DELETE FROM embedding_chunks WHERE path = ?1",
-            params![path],
-        ).context("Failed to delete chunks")?;
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM embedding_chunks WHERE path = ?1",
+                params![path],
+            )
+            .context("Failed to delete chunks")?;
 
-        self.conn.execute(
-            "DELETE FROM embedding_files WHERE path = ?1",
-            params![path],
-        )?;
+        self.conn
+            .execute("DELETE FROM embedding_files WHERE path = ?1", params![path])?;
 
         Ok(deleted)
     }
 
     /// Deletes all embeddings from the database.
     pub fn clear_all(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
+        self.conn
+            .execute_batch(
+                r#"
             DELETE FROM embedding_chunks;
             DELETE FROM embedding_files;
             "#,
-        ).context("Failed to clear all embeddings")?;
+            )
+            .context("Failed to clear all embeddings")?;
 
         Ok(())
     }
 
     /// Checks if a file needs its embeddings updated based on file hash.
     pub fn file_needs_update(&self, path: &str, current_hash: &str) -> Result<bool> {
-        let stored_hash: Option<String> = self.conn
+        let stored_hash: Option<String> = self
+            .conn
             .query_row(
                 "SELECT file_hash FROM embedding_files WHERE path = ?1",
                 params![path],
@@ -262,7 +268,8 @@ impl EmbeddingStorage {
 
     /// Gets information about a file's embeddings.
     pub fn get_file_info(&self, path: &str) -> Result<Option<FileEmbeddingInfo>> {
-        let info = self.conn
+        let info = self
+            .conn
             .query_row(
                 r#"
                 SELECT path, file_hash, last_modified, chunk_count
@@ -270,12 +277,14 @@ impl EmbeddingStorage {
                 WHERE path = ?1
                 "#,
                 params![path],
-                |row| Ok(FileEmbeddingInfo {
-                    path: row.get(0)?,
-                    file_hash: row.get(1)?,
-                    last_modified: row.get(2)?,
-                    chunk_count: row.get(3)?,
-                }),
+                |row| {
+                    Ok(FileEmbeddingInfo {
+                        path: row.get(0)?,
+                        file_hash: row.get(1)?,
+                        last_modified: row.get(2)?,
+                        chunk_count: row.get(3)?,
+                    })
+                },
             )
             .optional()
             .context("Failed to query file info")?;
@@ -291,8 +300,9 @@ impl EmbeddingStorage {
         last_modified: i64,
         chunk_count: u32,
     ) -> Result<()> {
-        self.conn.execute(
-            r#"
+        self.conn
+            .execute(
+                r#"
             INSERT INTO embedding_files (path, file_hash, last_modified, chunk_count)
             VALUES (?1, ?2, ?3, ?4)
             ON CONFLICT(path) DO UPDATE SET
@@ -300,8 +310,9 @@ impl EmbeddingStorage {
                 last_modified = excluded.last_modified,
                 chunk_count = excluded.chunk_count
             "#,
-            params![path, file_hash, last_modified, chunk_count],
-        ).context("Failed to upsert file info")?;
+                params![path, file_hash, last_modified, chunk_count],
+            )
+            .context("Failed to upsert file info")?;
 
         Ok(())
     }
@@ -317,12 +328,14 @@ impl EmbeddingStorage {
         )?;
 
         let files = stmt
-            .query_map([], |row| Ok(FileEmbeddingInfo {
-                path: row.get(0)?,
-                file_hash: row.get(1)?,
-                last_modified: row.get(2)?,
-                chunk_count: row.get(3)?,
-            }))?
+            .query_map([], |row| {
+                Ok(FileEmbeddingInfo {
+                    path: row.get(0)?,
+                    file_hash: row.get(1)?,
+                    last_modified: row.get(2)?,
+                    chunk_count: row.get(3)?,
+                })
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("Failed to list files")?;
 
@@ -363,7 +376,11 @@ impl EmbeddingStorage {
     /// Performs brute-force similarity search across all embeddings.
     ///
     /// Returns chunks sorted by descending cosine similarity.
-    pub fn search_similar(&self, query_embedding: &[f32], top_k: usize) -> Result<Vec<SimilarityResult>> {
+    pub fn search_similar(
+        &self,
+        query_embedding: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<SimilarityResult>> {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT id, path, start_line, end_line, content_hash, embedding, created_at
@@ -393,7 +410,11 @@ impl EmbeddingStorage {
             .collect();
 
         // Sort by score (descending)
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(top_k);
 
         Ok(results)
@@ -401,17 +422,18 @@ impl EmbeddingStorage {
 
     /// Counts total number of embedding chunks.
     pub fn count_chunks(&self) -> Result<u64> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM embedding_chunks",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM embedding_chunks", [], |row| {
+                    row.get(0)
+                })?;
         Ok(count as u64)
     }
 
     /// Gets metadata value by key.
     pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
-        let value = self.conn
+        let value = self
+            .conn
             .query_row(
                 "SELECT value FROM embeddings_meta WHERE key = ?1",
                 params![key],
@@ -446,9 +468,7 @@ impl EmbeddingStorage {
 
     /// Converts an embedding vector to a compact blob.
     fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
-        embedding.iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect()
+        embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
     }
 
     /// Converts a blob back to an embedding vector.
@@ -506,7 +526,9 @@ mod tests {
         let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
 
         let embedding = create_test_embedding(384, 0.5);
-        let id = storage.store_chunk("src/main.rs", 1, 40, "abc123", &embedding).unwrap();
+        let id = storage
+            .store_chunk("src/main.rs", 1, 40, "abc123", &embedding)
+            .unwrap();
 
         let chunk = storage.get_chunk(id).unwrap().unwrap();
         assert_eq!(chunk.path, "src/main.rs");
@@ -524,14 +546,18 @@ mod tests {
         assert!(storage.get_file_info("src/main.rs").unwrap().is_none());
 
         // Add file info
-        storage.upsert_file_info("src/main.rs", "hash1", 1000, 5).unwrap();
+        storage
+            .upsert_file_info("src/main.rs", "hash1", 1000, 5)
+            .unwrap();
 
         let info = storage.get_file_info("src/main.rs").unwrap().unwrap();
         assert_eq!(info.file_hash, "hash1");
         assert_eq!(info.chunk_count, 5);
 
         // Update file info
-        storage.upsert_file_info("src/main.rs", "hash2", 2000, 10).unwrap();
+        storage
+            .upsert_file_info("src/main.rs", "hash2", 2000, 10)
+            .unwrap();
 
         let info = storage.get_file_info("src/main.rs").unwrap().unwrap();
         assert_eq!(info.file_hash, "hash2");
@@ -547,7 +573,9 @@ mod tests {
         assert!(storage.file_needs_update("src/main.rs", "hash1").unwrap());
 
         // Add file
-        storage.upsert_file_info("src/main.rs", "hash1", 1000, 1).unwrap();
+        storage
+            .upsert_file_info("src/main.rs", "hash1", 1000, 1)
+            .unwrap();
 
         // Same hash doesn't need update
         assert!(!storage.file_needs_update("src/main.rs", "hash1").unwrap());
@@ -562,9 +590,15 @@ mod tests {
         let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
 
         // Store test embeddings
-        storage.store_chunk("a.rs", 1, 10, "h1", &[1.0, 0.0, 0.0]).unwrap();
-        storage.store_chunk("b.rs", 1, 10, "h2", &[0.0, 1.0, 0.0]).unwrap();
-        storage.store_chunk("c.rs", 1, 10, "h3", &[0.9, 0.1, 0.0]).unwrap();
+        storage
+            .store_chunk("a.rs", 1, 10, "h1", &[1.0, 0.0, 0.0])
+            .unwrap();
+        storage
+            .store_chunk("b.rs", 1, 10, "h2", &[0.0, 1.0, 0.0])
+            .unwrap();
+        storage
+            .store_chunk("c.rs", 1, 10, "h3", &[0.9, 0.1, 0.0])
+            .unwrap();
 
         // Query similar to a.rs
         let results = storage.search_similar(&[1.0, 0.0, 0.0], 2).unwrap();
@@ -599,9 +633,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
 
-        storage.store_chunk("a.rs", 1, 10, "h1", &[1.0, 0.0]).unwrap();
-        storage.store_chunk("a.rs", 11, 20, "h2", &[0.0, 1.0]).unwrap();
-        storage.store_chunk("b.rs", 1, 10, "h3", &[1.0, 1.0]).unwrap();
+        storage
+            .store_chunk("a.rs", 1, 10, "h1", &[1.0, 0.0])
+            .unwrap();
+        storage
+            .store_chunk("a.rs", 11, 20, "h2", &[0.0, 1.0])
+            .unwrap();
+        storage
+            .store_chunk("b.rs", 1, 10, "h3", &[1.0, 1.0])
+            .unwrap();
         storage.upsert_file_info("a.rs", "hash", 1000, 2).unwrap();
 
         let deleted = storage.delete_file_chunks("a.rs").unwrap();
