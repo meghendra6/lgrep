@@ -42,15 +42,33 @@ fn main() -> Result<()> {
             no_index,
             regex,
             case_sensitive,
-            mode: _,
-            keyword: _,
-            semantic: _,
-            hybrid: _,
-            profile: _,
-            context_pack: _,
-            agent_cache: _,
-            cache_ttl: _,
+            mode,
+            keyword,
+            semantic,
+            hybrid,
+            profile,
+            context_pack,
+            agent_cache,
+            cache_ttl,
         } => {
+            // Determine effective search mode from flags
+            let effective_mode = if hybrid {
+                Some(cgrep::hybrid::SearchMode::Hybrid)
+            } else if semantic {
+                Some(cgrep::hybrid::SearchMode::Semantic)
+            } else if keyword {
+                Some(cgrep::hybrid::SearchMode::Keyword)
+            } else {
+                mode.map(|m| match m {
+                    cli::CliSearchMode::Keyword => cgrep::hybrid::SearchMode::Keyword,
+                    cli::CliSearchMode::Semantic => cgrep::hybrid::SearchMode::Semantic,
+                    cli::CliSearchMode::Hybrid => cgrep::hybrid::SearchMode::Hybrid,
+                })
+            };
+            
+            // Apply profile settings if specified
+            let _ = profile; // TODO: Apply profile settings
+            
             query::search::run(
                 &query,
                 path.as_deref(),
@@ -65,6 +83,10 @@ fn main() -> Result<()> {
                 regex,
                 case_sensitive,
                 format,
+                effective_mode,
+                context_pack,
+                agent_cache,
+                cache_ttl,
             )?;
         }
         Commands::Symbols {

@@ -19,15 +19,20 @@ use tantivy::{
 
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
+use cgrep::cache::{CacheEntry, CacheKey, SearchCache};
 use cgrep::config::Config;
+use cgrep::embedding::provider::{CommandProvider, EmbeddingProvider, EmbeddingProviderConfig};
+use cgrep::embedding::storage::EmbeddingStorage;
 use cgrep::errors::IndexNotFoundError;
 use cgrep::filters::{matches_file_type, CompiledGlob, matches_glob_compiled, should_exclude_compiled};
+use cgrep::hybrid::{BM25Result, ContextPackBuilder, HybridConfig, HybridResult, HybridSearcher, SearchMode as HybridSearchMode};
 use cgrep::output::{use_colors, colorize_path, colorize_line_num, colorize_match, colorize_context};
 
 const INDEX_DIR: &str = ".cgrep";
+const DEFAULT_CACHE_TTL_MS: u64 = 600_000; // 10 minutes
 
 /// Search result for JSON output
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub path: String,
     pub score: f32,
@@ -35,10 +40,28 @@ pub struct SearchResult {
     pub line: Option<usize>,
     pub context_before: Vec<String>,
     pub context_after: Vec<String>,
+    /// BM25/text score for hybrid search
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_score: Option<f32>,
+    /// Vector/embedding score for hybrid search
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_score: Option<f32>,
+    /// Combined hybrid score
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_score: Option<f32>,
+    /// Unique result identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_id: Option<String>,
+    /// Chunk start line (for semantic/hybrid)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_start: Option<u32>,
+    /// Chunk end line (for semantic/hybrid)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_end: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchMode {
+enum IndexMode {
     Index,
     Scan,
 }
@@ -47,7 +70,7 @@ struct SearchOutcome {
     results: Vec<SearchResult>,
     files_with_matches: usize,
     total_matches: usize,
-    mode: SearchMode,
+    mode: IndexMode,
 }
 
 /// Run the search command
@@ -65,6 +88,10 @@ pub fn run(
     regex: bool,
     case_sensitive: bool,
     format: OutputFormat,
+    search_mode: Option<HybridSearchMode>,
+    context_pack: Option<usize>,
+    use_cache: bool,
+    cache_ttl: Option<u64>,
 ) -> Result<()> {
     let start_time = Instant::now();
     let use_color = use_colors() && format == OutputFormat::Text;
@@ -90,12 +117,12 @@ pub fn run(
     let index_path = root.join(INDEX_DIR);
 
     let requested_mode = if no_index || regex {
-        SearchMode::Scan
+        IndexMode::Scan
     } else {
-        SearchMode::Index
+        IndexMode::Index
     };
 
-    if requested_mode == SearchMode::Scan && fuzzy {
+    if requested_mode == IndexMode::Scan && fuzzy {
         eprintln!("Warning: --fuzzy is only supported with index search; ignoring.");
     }
 
@@ -110,7 +137,7 @@ pub fn run(
         None
     };
 
-    let outcome = if requested_mode == SearchMode::Index && index_path.exists() {
+    let outcome = if requested_mode == IndexMode::Index && index_path.exists() {
         index_search(
             query,
             &root,
@@ -123,7 +150,7 @@ pub fn run(
             fuzzy,
         )?
     } else {
-        if requested_mode == SearchMode::Index && !index_path.exists() {
+        if requested_mode == IndexMode::Index && !index_path.exists() {
             eprintln!(
                 "Index not found at {}. Falling back to scan mode.",
                 index_path.display()
@@ -196,7 +223,7 @@ pub fn run(
                     
                     if use_color {
                         match outcome.mode {
-                            SearchMode::Index => {
+                            IndexMode::Index => {
                                 println!(
                                     "{}{}  {} (score: {:.2})",
                                     colorize_path(&result.path, use_color),
@@ -205,7 +232,7 @@ pub fn run(
                                     result.score
                                 );
                             }
-                            SearchMode::Scan => {
+                            IndexMode::Scan => {
                                 println!(
                                     "{}{}  {} (match)",
                                     colorize_path(&result.path, use_color),
@@ -216,7 +243,7 @@ pub fn run(
                         }
                     } else {
                         match outcome.mode {
-                            SearchMode::Index => {
+                            IndexMode::Index => {
                                 println!(
                                     "{}{}  (score: {:.2})",
                                     result.path,
@@ -224,7 +251,7 @@ pub fn run(
                                     result.score
                                 );
                             }
-                            SearchMode::Scan => {
+                            IndexMode::Scan => {
                                 println!(
                                     "{}{}  (match)",
                                     result.path,
@@ -235,7 +262,7 @@ pub fn run(
                     }
 
                     if !result.snippet.is_empty() {
-                        let highlighted = if outcome.mode == SearchMode::Scan {
+                        let highlighted = if outcome.mode == IndexMode::Scan {
                             if let Some(re) = compiled_regex.as_ref() {
                                 highlight_matches_regex(&result.snippet, re, use_color)
                             } else {
@@ -431,6 +458,12 @@ fn index_search(
             line: line_num,
             context_before,
             context_after,
+            text_score: None,
+            vector_score: None,
+            hybrid_score: None,
+            result_id: None,
+            chunk_start: None,
+            chunk_end: None,
         });
     }
 
@@ -438,7 +471,7 @@ fn index_search(
         results,
         files_with_matches: files_with_matches.len(),
         total_matches,
-        mode: SearchMode::Index,
+        mode: IndexMode::Index,
     })
 }
 
@@ -525,6 +558,12 @@ fn scan_search(
                     line: Some(idx + 1),
                     context_before: vec![],
                     context_after: vec![],
+                    text_score: None,
+                    vector_score: None,
+                    hybrid_score: None,
+                    result_id: None,
+                    chunk_start: None,
+                    chunk_end: None,
                 });
             }
         } else {
@@ -565,6 +604,12 @@ fn scan_search(
                     line: Some(idx + 1),
                     context_before,
                     context_after,
+                    text_score: None,
+                    vector_score: None,
+                    hybrid_score: None,
+                    result_id: None,
+                    chunk_start: None,
+                    chunk_end: None,
                 });
             }
         }
@@ -574,7 +619,7 @@ fn scan_search(
         results,
         files_with_matches: files_with_matches.len(),
         total_matches,
-        mode: SearchMode::Scan,
+        mode: IndexMode::Scan,
     })
 }
 
