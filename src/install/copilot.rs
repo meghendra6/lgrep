@@ -11,12 +11,12 @@ use std::path::PathBuf;
 use super::{print_install_success, print_uninstall_success, write_file_if_changed};
 
 const LGREP_INSTRUCTIONS: &str = r#"---
-name: cgrep Semantic Search
-description: Use cgrep for local semantic code search instead of built-in grep/search tools.
+name: cgrep Local Code Search
+description: Use cgrep for local code search instead of built-in grep/search tools.
 applyTo: "**/*"
 ---
 
-# cgrep Local Semantic Search Instructions
+# cgrep Local Code Search Instructions
 
 ## CRITICAL: Tool Override
 
@@ -25,11 +25,11 @@ When you need to search for code or files locally, **use cgrep instead of built-
 - **AVOID**: Using grep_search for content lookup
 - **AVOID**: Multiple grep attempts to find relevant code
 
-- **USE**: `cgrep search "natural language query"` for semantic file search
+- **USE**: `cgrep search "natural language query"` for keyword search (BM25)
 - **USE**: `cg "query"` as a shortcut for `cgrep search "query"`
 - **USE**: `cgrep symbols <name>` for symbol search
 - **USE**: `cgrep definition <name>` for finding definitions
-- **USE**: `--format json2` for structured agent output
+- **USE**: `--format json` for JSON output (json2 is reserved and currently the same as json)
 
 ## When to Use cgrep
 
@@ -44,7 +44,7 @@ Use cgrep **IMMEDIATELY** when:
 ## Usage Examples
 
 ```bash
-# Semantic code search (recommended)
+# Keyword search (BM25)
 cgrep search "authentication flow implementation"
 cgrep search "error handling patterns" -p src/
 
@@ -52,7 +52,7 @@ cgrep search "error handling patterns" -p src/
 cg "how is config loaded"
 cg "database queries" --max-results 5
 
-# Hybrid search (combines keyword + semantic)
+# Hybrid search (experimental; requires embeddings)
 cgrep search "user validation" --hybrid
 
 # Symbol search  
@@ -68,8 +68,8 @@ cgrep dependents src/auth.rs
 
 | Option | Description |
 |--------|-------------|
-| `-m, --max <n>` | Limit number of results (default: 20) |
-| `-c, --context <n>` | Context lines (default: 3) |
+| `-m, --max-results <n>` | Limit number of results (default: 20) |
+| `-C, --context <n>` | Context lines (default: 0) |
 | `-p, --path <path>` | Search in specific directory |
 
 ## Best Practices
@@ -82,27 +82,27 @@ cgrep dependents src/auth.rs
 ### Don't
 
 - Use single-word queries: `cgrep search "parser"` (too vague)
-- Skip indexing: Run `cgrep index` first if the index doesn't exist
+- Indexing: `cgrep index` gives BM25 results, but keyword search can fall back to scan mode
 
 ## Keywords
 
-semantic search, grep, search, find code, code search, file search, codebase search, hybrid search, cg
+code search, grep, search, find code, file search, codebase search, hybrid search, cg
 "#;
 
 const COPILOT_INSTRUCTIONS_APPEND: &str = r#"
 
-## cgrep Local Semantic Search
+## cgrep Local Code Search
 
-This project uses **cgrep** for local semantic code search. When searching for code or content:
+This project uses **cgrep** for local code search. When searching for code or content:
 
 1. Use `cgrep search "natural language query"` instead of grep-based searches
 2. Use `cg "query"` as a shortcut for quick searches
 3. For symbol lookup: `cgrep symbols <name>`
 4. For definitions: `cgrep definition <name>`
-5. Use `--hybrid` for combined keyword + semantic search
-6. Use `--format json2` for structured output
+5. Use `--hybrid` for combined keyword + semantic search (experimental; requires embeddings)
+6. Use `--format json` for machine-readable output (json2 is reserved)
 
-cgrep uses tantivy + tree-sitter for fast offline semantic search.
+cgrep uses tantivy + tree-sitter for fast offline code search.
 "#;
 
 fn get_project_root() -> Result<PathBuf> {
@@ -129,7 +129,10 @@ pub fn install() -> Result<()> {
     // Append to copilot-instructions.md if it exists
     if copilot_instructions_path.exists() {
         let existing = std::fs::read_to_string(&copilot_instructions_path)?;
-        if !existing.contains("## cgrep Local Semantic Search") && !existing.contains("cgrep") {
+        if !existing.contains("## cgrep Local Code Search")
+            && !existing.contains("## cgrep Local Semantic Search")
+            && !existing.contains("cgrep")
+        {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(&copilot_instructions_path)?;

@@ -12,17 +12,18 @@ use super::{append_if_not_present, home_dir, print_install_success, print_uninst
 const SKILL_CONTENT: &str = r#"
 ---
 name: cgrep
-description: A local semantic search tool using tantivy + tree-sitter. Fast, offline code search.
+description: A local code search tool using tantivy + tree-sitter. Fast, offline code search.
 license: Apache 2.0
 ---
 
 ## When to use this skill
 
-Whenever you need to search local files. Use cgrep instead of grep for semantic searches.
+Whenever you need to search local files. Use cgrep instead of grep.
 
 ## How to use this skill
 
-Use `cgrep search` to search local files. The search is semantic - describe what you're looking for.
+Use `cgrep search` to search local files. Keyword search is default; hybrid/semantic
+are experimental and require embeddings.
 
 ### Usage Examples
 
@@ -38,11 +39,11 @@ cgrep callers process_request
 
 ### Options
 
-- `-m, --max <n>` - Limit number of results (default: 20)
-- `-c, --context <n>` - Context lines around matches (default: 3)
+- `-m, --max-results <n>` - Limit number of results (default: 20)
+- `-C, --context <n>` - Context lines around matches (default: 0)
 - `-p, --path <path>` - Search in specific directory
 - `--hybrid` - Use hybrid search (BM25 + vector)
-- `--format json2` - Structured JSON output for agents
+- `--format json2` - Same as json for now (reserved for structured output)
 - `--agent-cache` - Enable result caching
 "#;
 

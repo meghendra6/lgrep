@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use super::{append_if_not_present, home_dir, print_install_success, print_uninstall_success};
 
 const SKILL_CONTENT: &str = r#"
-## cgrep Local Semantic Search
+## cgrep Local Code Search
 
-Use `cgrep` for fast local semantic code search instead of built-in grep.
+Use `cgrep` for fast local code search (BM25 keyword search + AST symbols).
+Hybrid/semantic modes are experimental and require embeddings.
 
 ### When to use cgrep
 
@@ -23,17 +24,17 @@ Use `cgrep` for fast local semantic code search instead of built-in grep.
 ### Usage
 
 ```bash
-cgrep search "authentication flow"       # semantic search
+cgrep search "authentication flow"       # BM25 keyword search
 cgrep search "error handling" -m 10      # limit results
 cg "config validation"                   # shortcut
-cgrep search "user auth" --hybrid        # hybrid search
+cgrep search "user auth" --hybrid        # experimental (requires embeddings)
 cgrep symbols MyClass                     # find symbol definitions
 cgrep definition handleClick              # find function definition
 ```
 
 ### Prefer cgrep over
 
-- Built-in grep for semantic/conceptual searches
+- Built-in grep for conceptual searches (hybrid/semantic when available)
 - Multiple grep attempts to find code
 - Pattern-based searches when intent matters
 "#;

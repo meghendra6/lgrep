@@ -15,17 +15,18 @@ const TOOL_DEFINITION: &str = r#"import { tool } from "@opencode-ai/plugin"
 const SKILL = `
 ---
 name: cgrep
-description: A local semantic search tool using tantivy + tree-sitter. Fast, offline code search.
+description: A local code search tool using tantivy + tree-sitter. Fast, offline code search.
 license: Apache 2.0
 ---
 
 ## When to use this skill
 
-Whenever you need to search local files. Use cgrep instead of grep for semantic searches.
+Whenever you need to search local files. Use cgrep instead of grep.
 
 ## How to use this skill
 
-Use \`cgrep search\` to search local files. The search is semantic - describe what you're looking for.
+Use \`cgrep search\` to search local files. Keyword search is default; hybrid/semantic
+are experimental and require embeddings.
 
 ### Do
 
@@ -33,7 +34,7 @@ Use \`cgrep search\` to search local files. The search is semantic - describe wh
 cgrep search "What code parsers are available?"
 cgrep search "How are chunks defined?" -m 10
 cg "config validation" --max-results 5
-cgrep search "user auth" --hybrid
+cgrep search "user auth" --hybrid  # experimental; requires embeddings
 cgrep symbols MyFunction -t function
 \`\`\`
 
