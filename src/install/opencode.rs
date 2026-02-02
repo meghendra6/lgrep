@@ -32,6 +32,8 @@ Use \`cgrep search\` to search local files. The search is semantic - describe wh
 \`\`\`bash
 cgrep search "What code parsers are available?"
 cgrep search "How are chunks defined?" -m 10
+cg "config validation" --max-results 5
+cgrep search "user auth" --hybrid
 cgrep symbols MyFunction -t function
 \`\`\`
 
