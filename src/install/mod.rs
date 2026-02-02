@@ -65,7 +65,7 @@ pub fn home_dir() -> Result<std::path::PathBuf> {
 pub fn print_install_success(agent: &str) {
     println!("✓ Successfully installed cgrep for {}", agent);
     println!();
-    println!("  cgrep is a local semantic search tool.");
+    println!("  cgrep is a local code search tool (BM25 + AST symbols).");
     println!("  It indexes files locally using tantivy + tree-sitter.");
     println!();
     println!(
