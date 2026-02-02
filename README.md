@@ -1,357 +1,269 @@
 # cgrep
 
-> Local semantic code search tool with AST and BM25 support
+Local code search with BM25 ranking and AST-aware symbols. Fully local, single
+binary. Includes scan mode fallback and experimental hybrid/semantic search.
 
-**cgrep** is a high-performance, fully local code search tool that combines:
-- **tree-sitter** for AST-aware symbol extraction
-- **tantivy** for BM25-ranked full-text search
-- **ripgrep's ignore crate** for respecting .gitignore
+## Why cgrep
+- Fast BM25 index (Tantivy)
+- AST-aware symbol lookup (tree-sitter)
+- Respects .gitignore (ignore crate)
+- Single binary, no cloud dependencies
+- JSON output for automation and agents
+- Scan mode with regex when you do not want to index
 
-## Features
+## Install
 
-- **Zero cloud dependencies** - All processing is local, no data leaves your machine
-- **Single binary** - No runtime or dependencies required (~5MB)
-- **Fast** - ripgrep-level file scanning performance
-- **AST-aware** - Understands code structure (functions, classes, etc.)
-- **BM25 ranking** - Relevant results, not just pattern matches
-- **Hybrid search** - Combine BM25 with vector embeddings for semantic search
-- **Incremental indexing** - Hash-based change detection (BLAKE3), symbol cache; binary files skipped by content
-- **Large file streaming** - Chunked indexing to keep memory usage low
-- **Multi-language** - TypeScript, JavaScript, Python, Rust, Go, C, C++, Java, Ruby
-- **Shell completions** - Tab completion for Bash, Zsh, Fish, PowerShell
-- **Agent integrations** - Works with Claude Code, Codex, Copilot, OpenCode
-- **Agent-friendly output** - JSON2 format with stable result IDs and caching
-
-## Installation
-
-### From Source
-
+### From source
 ```bash
-cd cgrep
 cargo build --release
 cp target/release/cgrep ~/.local/bin/
+cp target/release/cg ~/.local/bin/
 ```
 
-### Using Cargo
-
+### With cargo
 ```bash
 cargo install --path .
 ```
 
-## Quick Start
-
+## Quick start
 ```bash
-# Build the search index (run once)
+# Build the search index
 cgrep index
 
-# Search for code
+# Full-text search (BM25)
 cgrep search "authentication flow"
 
-# Find a symbol definition
+# Search with context and file type filter
+cgrep search "auth middleware" -C 2 -t typescript
+
+# Symbol lookups
+cgrep symbols UserService -T class
 cgrep definition handleAuth
-
-# Find all callers of a function
 cgrep callers validateToken
-
-# Find all references to a symbol
 cgrep references MyClass
 
-# Search for symbols by type
-cgrep symbols UserService --type class
+# File dependency search
+cgrep dependents src/auth.rs
+```
+
+Shortcut:
+```bash
+# cg is a thin wrapper around cgrep
+cg "authentication flow"
 ```
 
 ## Commands
 
 | Command | Description |
-|---------|-------------|
-| `cgrep search <query>` | Full-text search with BM25 ranking |
-| `cgrep symbols <name>` | Search for symbols by name |
+|--------|-------------|
+| `cgrep search <query>` | Full-text search (BM25), or hybrid/semantic if enabled |
+| `cgrep symbols <name>` | Search symbols by name |
 | `cgrep definition <name>` | Find symbol definition location |
-| `cgrep callers <function>` | Find all callers of a function |
-| `cgrep references <name>` | Find all references to a symbol |
+| `cgrep callers <function>` | Find callers of a function |
+| `cgrep references <name>` | Find symbol references |
 | `cgrep dependents <file>` | Find files that depend on a file |
 | `cgrep index` | Build or rebuild the search index |
 | `cgrep watch` | Watch for file changes and update index |
 | `cgrep completions <shell>` | Generate shell completions |
+| `cgrep install-*` | Install agent instructions |
+| `cgrep uninstall-*` | Uninstall agent instructions |
 
-## Search Command Flags
+## Search modes
 
+`cgrep search` supports three modes:
+
+- `keyword` (default): BM25 only
+- `semantic`: embeddings only (experimental)
+- `hybrid`: BM25 + embeddings (experimental)
+
+Examples:
 ```bash
-cgrep search <query> [options]
+cgrep search "token refresh" --mode keyword
+cgrep search "token refresh" --mode semantic
+cgrep search "token refresh" --mode hybrid
+
+# Shorthand aliases
+cgrep search "token refresh" --keyword
+cgrep search "token refresh" --semantic
+cgrep search "token refresh" --hybrid
 ```
 
-| Flag | Description |
-|------|-------------|
-| `-p, --path <path>` | Path to search in (defaults to current directory) |
-| `-m, --max-results <n>` | Maximum number of results (default: 20) |
-| `-C, --context <n>` | Show N lines before and after each match |
-| `-t, --type <type>` | Filter by file type/language (e.g., rust, ts, python) |
-| `-g, --glob <pattern>` | Filter files matching glob pattern (e.g., "*.rs") |
-| `--exclude <pattern>` | Exclude files matching pattern |
-| `-q, --quiet` | Suppress statistics output |
-| `-f, --fuzzy` | Enable fuzzy matching (allows 1-2 character differences) |
-| `--no-index` | Scan files directly without using the index |
-| `--regex` | Treat query as a regular expression (scan mode) |
-| `--case-sensitive` | Case-sensitive search (scan mode) |
-| `--format <text\|json\|json2>` | Output format (json2 for AI agents) |
-| `--hybrid` | Use hybrid BM25 + vector search |
-| `--semantic` | Use semantic (vector) search only |
-| `--keyword` | Use keyword (BM25) search only (default) |
-| `--agent-cache` | Enable result caching for agents |
-| `--cache-ttl <ms>` | Cache TTL in milliseconds (default: 600000) |
+Important notes:
+- Hybrid/semantic require a BM25 index. If the index is missing, cgrep returns
+  an error (no scan fallback for these modes).
+- If no embedding database exists, cgrep prints a warning and falls back to BM25.
 
-If the index does not exist, `cgrep search` automatically falls back to scan mode.
+## Search flags
 
-## cg Shortcut
-
-The `cg` binary is a convenience wrapper for quick searches:
-
-```bash
-# Quick search (equivalent to: cgrep search "query")
-cg "authentication"
-
-# With options
-cg "config" --max-results 5
-
-# Subcommands still work
-cg symbols MyClass
+Common flags:
+```
+-p, --path <path>        Path to search in (default: current directory)
+-m, --max-results <n>    Maximum results (default: 20)
+-C, --context <n>        Context lines before/after matches
+-t, --type <type>        File type filter (rust, ts, python, ...)
+-g, --glob <pattern>     Glob filter (e.g. "src/**/*.rs")
+    --exclude <pattern>  Exclude pattern
+-q, --quiet              Suppress statistics output
+-f, --fuzzy              Fuzzy BM25 matching (index mode only)
 ```
 
-## Symbols Command Flags
+Scan mode:
+```
+    --no-index           Force scan mode (no index)
+    --regex              Regex search (scan mode only)
+    --case-sensitive     Case-sensitive (scan mode only)
+```
+Note: In keyword mode, if no index exists, cgrep falls back to scan mode.
 
-```bash
-cgrep symbols <name> [options]
+Agent/experimental:
+```
+    --agent-cache        Cache hybrid/semantic results
+    --cache-ttl <ms>     Cache TTL in milliseconds (default: 600000)
+    --context-pack <n>   Accepted but not implemented yet
+    --profile <name>     Accepted but not implemented yet
 ```
 
-| Flag | Description |
-|------|-------------|
-| `-T, --type <type>` | Filter by symbol type (function, class, variable, etc.) |
-| `-l, --lang <lang>` | Filter by language (typescript, python, rust, etc.) |
-| `-t, --file-type <type>` | Filter by file type |
-| `-g, --glob <pattern>` | Filter files matching glob pattern |
-| `--exclude <pattern>` | Exclude files matching pattern |
-| `-q, --quiet` | Suppress statistics output |
+## Command-specific flags
 
-## References Command Flags
-
-```bash
-cgrep references <name> [options]
+Symbols:
+```
+-T, --type <type>        Symbol kind (function, class, ...)
+-l, --lang <lang>        Language filter
+-t, --file-type <type>   File type filter
+-g, --glob <pattern>     Glob filter
+    --exclude <pattern>  Exclude pattern
 ```
 
-| Flag | Description |
-|------|-------------|
-| `-p, --path <path>` | Path to search in (defaults to current directory) |
-| `-m, --max-results <n>` | Maximum number of results (default: 50) |
-| `--format <text\|json>` | Output format |
+References:
+```
+-p, --path <path>        Path to search in
+-m, --max-results <n>    Maximum results (default: 50)
+```
+
+Index:
+```
+-p, --path <path>        Path to index
+-f, --force              Force full reindex
+    --embeddings <mode>  auto|precompute|off (accepted, not wired yet)
+    --embeddings-force   Force regenerate embeddings (accepted, not wired yet)
+```
+
+## Output formats
+
+Global flag:
+```
+--format text|json|json2
+```
+
+- `text`: human-readable output
+- `json`: array of results
+- `json2`: currently identical to `json` (reserved for structured output)
+
+Search result JSON fields:
+```
+path, score, snippet, line, context_before, context_after
+text_score, vector_score, hybrid_score, result_id, chunk_start, chunk_end
+```
+Optional fields appear only in hybrid/semantic mode.
+
+## Embeddings (current state)
+
+The repository includes:
+- Chunking logic (default: 80 lines per chunk, 20 lines overlap)
+- SQLite storage at `.cgrep/embeddings.sqlite`
+- Provider interface for generating embeddings
+
+Current limitations:
+- `cgrep index` does NOT generate embeddings yet. The `--embeddings` flags are
+  accepted by the CLI but not wired to the indexer.
+- `cgrep search --semantic/--hybrid` uses a dummy embedding provider for query
+  embeddings (placeholder). Without a real provider and stored embeddings,
+  semantic scoring is not meaningful.
+
+If you want real semantic search today, you must:
+1) Generate embeddings externally.
+2) Store them in `.cgrep/embeddings.sqlite` using the schema in
+   `src/embedding/storage.rs`.
+3) Wire a real embedding provider into the search path (library has a command
+   provider interface, but the CLI does not use it yet).
+
+## Indexing behavior
+
+- Index is stored under `.cgrep/`.
+- Incremental indexing uses BLAKE3 hashes to skip unchanged files.
+- Binary files are skipped.
+- Large files are chunked (~1MB per document) to limit memory use.
+- `.gitignore` is respected.
 
 ## Configuration
 
-### Config File
+Config file locations (first wins):
+1) `.cgreprc.toml` in the project root
+2) `~/.config/cgrep/config.toml`
 
-cgrep supports configuration via `.cgreprc.toml` in your project directory or `~/.config/cgrep/config.toml` for global settings:
-
+Currently used fields:
 ```toml
-# .cgreprc.toml
 max_results = 20
-default_format = "text"  # or "json"
+exclude_patterns = ["target/**", "node_modules/**"]
+```
+Note: `max_results` is read but the CLI always supplies a default value, so the
+config value currently has no effect unless the CLI defaults change.
+
+Parsed but not applied yet (reserved):
+- `[search]` (mode, weights, candidate_k)
+- `[embeddings]` (provider, model, chunking)
+- `[cache]` (enabled, ttl)
+- `[profile.*]` presets
+- `default_format` (only text/json supported in code path)
+
+## Supported languages
+
+AST symbol extraction (tree-sitter):
+- typescript, tsx, javascript, python, rust, go, c, cpp, java, ruby
+
+Full-text indexing/scanning (file extensions):
+- rs, ts, tsx, js, jsx, py, go, java, c, cpp, h, hpp, cs, rb, php, swift
+- kt, kts, scala, lua, md, txt, json, yaml, toml
+
+Files outside these extensions are ignored.
+
+## Agent integrations
+
+These commands install local instruction files so your agent uses cgrep
+for code search:
+```
+cgrep install-claude-code
+cgrep install-codex
+cgrep install-copilot
+cgrep install-opencode
 ```
 
-### Index Location
-
-cgrep stores its index in `.cgrep/` directory in your project root. Add this to your `.gitignore`:
-
+Uninstall:
 ```
-.cgrep/
+cgrep uninstall-claude-code
+cgrep uninstall-codex
+cgrep uninstall-copilot
+cgrep uninstall-opencode
 ```
 
-Indexing uses BLAKE3 file hashes to detect real content changes, caches extracted symbols, and skips binary files by content (NUL/invalid UTF-8) while still indexing large text/code files. Large files are chunked into smaller segments to keep memory usage low.
+## Troubleshooting
 
-## Shell Completions
+- Index not found:
+  - Run `cgrep index`
+- Hybrid/semantic search returns BM25-only results:
+  - Ensure `.cgrep/embeddings.sqlite` exists and contains embeddings
+- Symbols not found for a language:
+  - Only the AST-supported languages above provide symbol extraction
 
-Generate shell completions for your preferred shell:
+## Known limitations
+
+- `cg` with no arguments shows `cgrep --help` (TUI is not implemented yet).
+- `--profile` and `--context-pack` are accepted by the CLI but not applied.
+- `--format json2` currently outputs the same structure as `json`.
+
+## Development
 
 ```bash
-# Bash
-cgrep completions bash > ~/.local/share/bash-completion/completions/cgrep
-
-# Zsh
-cgrep completions zsh > ~/.zfunc/_cgrep
-
-# Fish
-cgrep completions fish > ~/.config/fish/completions/cgrep.fish
-
-# PowerShell
-cgrep completions powershell > $PROFILE.CurrentUserAllHosts
+cargo build
+cargo test
 ```
-
-## Agent Integrations
-
-cgrep integrates with AI coding agents for enhanced code understanding:
-
-### Claude Code
-
-```bash
-cgrep install-claude-code    # Install integration
-cgrep uninstall-claude-code  # Uninstall
-```
-
-### OpenAI Codex
-
-```bash
-cgrep install-codex    # Install integration
-cgrep uninstall-codex  # Uninstall
-```
-
-### GitHub Copilot
-
-```bash
-cgrep install-copilot    # Install integration
-cgrep uninstall-copilot  # Uninstall
-```
-
-### OpenCode
-
-```bash
-cgrep install-opencode    # Install integration
-cgrep uninstall-opencode  # Uninstall
-```
-
-## Supported Languages
-
-| Language | File Extensions | AST Support | Full-text |
-|----------|----------------|-------------|-----------|
-| TypeScript | .ts, .tsx | ✅ | ✅ |
-| JavaScript | .js, .jsx | ✅ | ✅ |
-| Python | .py | ✅ | ✅ |
-| Rust | .rs | ✅ | ✅ |
-| Go | .go | ✅ | ✅ |
-| C | .c, .h | ✅ | ✅ |
-| C++ | .cpp, .cc, .hpp | ✅ | ✅ |
-| Java | .java | ✅ | ✅ |
-| Ruby | .rb | ✅ | ✅ |
-| Other | * | ❌ | ✅ |
-
-## Examples
-
-### Full-text Search
-
-```bash
-$ cgrep search "error handling"
-
-✓ Found 15 results for: error handling
-
-➜ src/lib/auth.ts (score: 8.59)
-    throw new Error("Authentication failed");
-
-➜ src/commands/search.ts (score: 7.23)
-    } catch (error) {
-```
-
-### Full-text Search with Context
-
-```bash
-$ cgrep search "auth middleware" -C 2 -t typescript
-
-✓ Found 5 results for: auth middleware
-
-➜ src/middleware/auth.ts (score: 9.12)
-    // Previous line
-    export const authMiddleware = async (req, res, next) => {
-    // Next line
-```
-
-### Fuzzy Search
-
-```bash
-$ cgrep search "authentcation" --fuzzy  # Note typo
-
-✓ Found 12 results (fuzzy matching)
-```
-
-### Symbol Search
-
-```bash
-$ cgrep symbols handleAuth --type function
-
-🔍 Searching for symbol: handleAuth
-
-  [function] handleAuth src/lib/auth.ts:45
-```
-
-### Find Definition
-
-```bash
-$ cgrep definition FileScanner
-
-🔍 Finding definition of: FileScanner
-
-  [struct] FileScanner cgrep/src/indexer/scanner.rs:20:1
-
-  ➜   20 pub struct FileScanner {
-      21     root: PathBuf,
-      22     extensions: Vec<String>,
-```
-
-### Find Callers
-
-```bash
-$ cgrep callers validateToken
-
-🔍 Finding callers of: validateToken
-
-  src/api/routes.ts:45 const result = validateToken(token);
-  src/middleware/auth.ts:23 if (!validateToken(req.token)) {
-```
-
-### Find References
-
-```bash
-$ cgrep references UserService
-
-🔍 Finding references of: UserService
-
-  src/services/user.ts:5:14 export class UserService {
-  src/api/routes.ts:12:22 const service = new UserService();
-  src/tests/user.test.ts:8:10 describe('UserService', () => {
-
-✓ Found 3 references
-```
-
-### JSON Output
-
-```bash
-$ cgrep search "config" --format json
-[
-  {
-    "path": "src/config.ts",
-    "line": 10,
-    "score": 8.5,
-    "content": "export const config = { ... }"
-  }
-]
-```
-
-## Performance
-
-Compared to traditional tools:
-
-| Metric | grep | ripgrep | cgrep |
-|--------|------|---------|-------|
-| File scan | 1x | 10-50x | 10-50x |
-| Code understanding | ❌ | ❌ | ✅ |
-| Ranking | ❌ | ❌ | ✅ (BM25) |
-| Symbol search | ❌ | ❌ | ✅ |
-| Dependency tracking | ❌ | ❌ | ✅ |
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `CGREP_LOG` | Set log level (e.g., `debug`, `info`, `warn`) |
-| `NO_COLOR` | Disable colored output |
-
-## License
-
-Dual-licensed under the MIT and Apache License, Version 2.0.
-
-SPDX-License-Identifier: MIT OR Apache-2.0
