@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::embedding::{EmbeddingChunk, EmbeddingProvider, EmbeddingStorage, SimilarityResult};
+use crate::embedding::EmbeddingStorage;
 
 /// Search mode for queries
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -122,7 +122,7 @@ pub struct BM25Result {
 }
 
 /// A hybrid search result with both text and vector scores
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HybridResult {
     /// File path relative to repository root
     pub path: String,
