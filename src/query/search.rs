@@ -19,13 +19,13 @@ use tantivy::{
 
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
-use cgrep::cache::{CacheEntry, CacheKey, SearchCache};
+use cgrep::cache::{CacheKey, SearchCache};
 use cgrep::config::Config;
-use cgrep::embedding::provider::{CommandProvider, EmbeddingProvider, EmbeddingProviderConfig};
+use cgrep::embedding::provider::EmbeddingProvider;
 use cgrep::embedding::storage::EmbeddingStorage;
 use cgrep::errors::IndexNotFoundError;
 use cgrep::filters::{matches_file_type, CompiledGlob, matches_glob_compiled, should_exclude_compiled};
-use cgrep::hybrid::{BM25Result, ContextPackBuilder, HybridConfig, HybridResult, HybridSearcher, SearchMode as HybridSearchMode};
+use cgrep::hybrid::{BM25Result, HybridConfig, HybridResult, HybridSearcher, SearchMode as HybridSearchMode};
 use cgrep::output::{use_colors, colorize_path, colorize_line_num, colorize_match, colorize_context};
 
 const INDEX_DIR: &str = ".cgrep";
@@ -89,7 +89,7 @@ pub fn run(
     case_sensitive: bool,
     format: OutputFormat,
     search_mode: Option<HybridSearchMode>,
-    context_pack: Option<usize>,
+    _context_pack: Option<usize>,
     use_cache: bool,
     cache_ttl: Option<u64>,
 ) -> Result<()> {
@@ -137,37 +137,61 @@ pub fn run(
         None
     };
 
-    let outcome = if requested_mode == IndexMode::Index && index_path.exists() {
-        index_search(
-            query,
-            &root,
-            effective_max_results,
-            context,
-            file_type,
-            compiled_glob.as_ref(),
-            compiled_exclude.as_ref(),
-            &config_exclude_patterns,
-            fuzzy,
-        )?
-    } else {
-        if requested_mode == IndexMode::Index && !index_path.exists() {
-            eprintln!(
-                "Index not found at {}. Falling back to scan mode.",
-                index_path.display()
-            );
+    // Check for hybrid search mode
+    let effective_search_mode = search_mode.unwrap_or(HybridSearchMode::Keyword);
+    
+    let outcome = match effective_search_mode {
+        HybridSearchMode::Semantic | HybridSearchMode::Hybrid => {
+            // Use hybrid search
+            hybrid_search(
+                query,
+                &root,
+                effective_max_results,
+                context,
+                file_type,
+                compiled_glob.as_ref(),
+                compiled_exclude.as_ref(),
+                &config_exclude_patterns,
+                effective_search_mode,
+                use_cache,
+                cache_ttl.unwrap_or(DEFAULT_CACHE_TTL_MS),
+            )?
         }
-        scan_search(
-            query,
-            &root,
-            effective_max_results,
-            context,
-            file_type,
-            compiled_glob.as_ref(),
-            compiled_exclude.as_ref(),
-            &config_exclude_patterns,
-            compiled_regex.as_ref(),
-            case_sensitive,
-        )?
+        HybridSearchMode::Keyword => {
+            // Standard BM25 or scan search
+            if requested_mode == IndexMode::Index && index_path.exists() {
+                index_search(
+                    query,
+                    &root,
+                    effective_max_results,
+                    context,
+                    file_type,
+                    compiled_glob.as_ref(),
+                    compiled_exclude.as_ref(),
+                    &config_exclude_patterns,
+                    fuzzy,
+                )?
+            } else {
+                if requested_mode == IndexMode::Index && !index_path.exists() {
+                    eprintln!(
+                        "Index not found at {}. Falling back to scan mode.",
+                        index_path.display()
+                    );
+                }
+                scan_search(
+                    query,
+                    &root,
+                    effective_max_results,
+                    context,
+                    file_type,
+                    compiled_glob.as_ref(),
+                    compiled_exclude.as_ref(),
+                    &config_exclude_patterns,
+                    compiled_regex.as_ref(),
+                    case_sensitive,
+                )?
+            }
+        }
     };
 
     let elapsed = start_time.elapsed();
@@ -620,6 +644,243 @@ fn scan_search(
         files_with_matches: files_with_matches.len(),
         total_matches,
         mode: IndexMode::Scan,
+    })
+}
+
+/// Hybrid search combining BM25 with vector embeddings
+fn hybrid_search(
+    query: &str,
+    root: &std::path::Path,
+    max_results: usize,
+    context: usize,
+    file_type: Option<&str>,
+    compiled_glob: Option<&CompiledGlob>,
+    compiled_exclude: Option<&CompiledGlob>,
+    config_exclude_patterns: &[CompiledGlob],
+    mode: HybridSearchMode,
+    use_cache: bool,
+    cache_ttl_ms: u64,
+) -> Result<SearchOutcome> {
+    let index_path = root.join(INDEX_DIR);
+    let embedding_db_path = root.join(".cgrep").join("embeddings.sqlite");
+    
+    // Build cache key
+    let cache_key = CacheKey {
+        query: query.to_string(),
+        mode: mode.to_string(),
+        max_results,
+        context,
+        file_type: file_type.map(|s| s.to_string()),
+        glob: compiled_glob.map(|_| "set".to_string()),
+        exclude: compiled_exclude.map(|_| "set".to_string()),
+        profile: None,
+        index_hash: None,
+        embedding_model: None,
+    };
+    
+    // Try cache
+    if use_cache {
+        if let Ok(cache) = SearchCache::new(root, cache_ttl_ms) {
+            if let Ok(Some(entry)) = cache.get::<Vec<HybridResult>>(&cache_key) {
+                // Return cached results
+                let results: Vec<SearchResult> = entry.data.iter().map(|hr| SearchResult {
+                    path: hr.path.clone(),
+                    score: hr.score,
+                    snippet: hr.snippet.clone(),
+                    line: hr.line,
+                    context_before: vec![],
+                    context_after: vec![],
+                    text_score: Some(hr.text_score),
+                    vector_score: Some(hr.vector_score),
+                    hybrid_score: Some(hr.score),
+                    result_id: hr.result_id.clone(),
+                    chunk_start: hr.chunk_start,
+                    chunk_end: hr.chunk_end,
+                }).collect();
+                
+                return Ok(SearchOutcome {
+                    results,
+                    files_with_matches: entry.data.iter().map(|r| r.path.clone()).collect::<HashSet<_>>().len(),
+                    total_matches: entry.data.len(),
+                    mode: IndexMode::Index,
+                });
+            }
+        }
+    }
+    
+    // Open embedding storage if available
+    let embedding_storage = if embedding_db_path.exists() {
+        EmbeddingStorage::open(&embedding_db_path).ok()
+    } else {
+        None
+    };
+    
+    // Get BM25 results first
+    if !index_path.exists() {
+        return Err(anyhow::anyhow!("Index required for hybrid search. Run: cgrep index"));
+    }
+    
+    let bm25_outcome = index_search(
+        query,
+        root,
+        max_results * 3, // Get more for reranking
+        0, // No context yet
+        file_type,
+        compiled_glob,
+        compiled_exclude,
+        config_exclude_patterns,
+        false,
+    )?;
+    
+    // Convert to BM25Result format
+    let bm25_results: Vec<BM25Result> = bm25_outcome.results.iter().map(|r| {
+        BM25Result {
+            path: r.path.clone(),
+            score: r.score,
+            snippet: r.snippet.clone(),
+            line: r.line,
+            chunk_start: r.line.map(|l| l as u32),
+            chunk_end: r.line.map(|l| l as u32),
+        }
+    }).collect();
+    
+    // Create hybrid searcher
+    let config = HybridConfig::default().with_max_results(max_results);
+    let hybrid_searcher = HybridSearcher::new(config);
+    
+    // Helper to make result ID
+    let make_id = |path: &str, line: Option<usize>| -> String {
+        let input = match line {
+            Some(l) => format!("{}:{}", path, l),
+            None => path.to_string(),
+        };
+        let hash = blake3::hash(input.as_bytes());
+        hash.to_hex()[..16].to_string()
+    };
+    
+    // Perform hybrid search based on mode
+    let hybrid_results: Vec<HybridResult> = match mode {
+        HybridSearchMode::Semantic | HybridSearchMode::Hybrid => {
+            if let Some(ref storage) = embedding_storage {
+                // Generate query embedding using DummyProvider (placeholder)
+                let provider = cgrep::embedding::provider::DummyProvider::new(384);
+                match provider.embed_one(query) {
+                    Ok(query_embedding) => {
+                        hybrid_searcher.rerank_with_embeddings(bm25_results, &query_embedding, storage)
+                            .unwrap_or_default()
+                    }
+                    Err(_) => {
+                        // Fallback to BM25-only if embedding fails
+                        bm25_results.iter().map(|r| HybridResult {
+                            path: r.path.clone(),
+                            score: r.score,
+                            text_score: r.score,
+                            vector_score: 0.0,
+                            text_norm: r.score,
+                            vector_norm: 0.0,
+                            snippet: r.snippet.clone(),
+                            line: r.line,
+                            chunk_start: r.chunk_start,
+                            chunk_end: r.chunk_end,
+                            result_id: Some(make_id(&r.path, r.line)),
+                        }).collect()
+                    }
+                }
+            } else {
+                eprintln!("Warning: No embedding storage found. Using BM25 only.");
+                bm25_results.iter().map(|r| HybridResult {
+                    path: r.path.clone(),
+                    score: r.score,
+                    text_score: r.score,
+                    vector_score: 0.0,
+                    text_norm: r.score,
+                    vector_norm: 0.0,
+                    snippet: r.snippet.clone(),
+                    line: r.line,
+                    chunk_start: r.chunk_start,
+                    chunk_end: r.chunk_end,
+                    result_id: Some(make_id(&r.path, r.line)),
+                }).collect()
+            }
+        }
+        HybridSearchMode::Keyword => {
+            // Should not reach here
+            bm25_results.iter().map(|r| HybridResult {
+                path: r.path.clone(),
+                score: r.score,
+                text_score: r.score,
+                vector_score: 0.0,
+                text_norm: r.score,
+                vector_norm: 0.0,
+                snippet: r.snippet.clone(),
+                line: r.line,
+                chunk_start: r.chunk_start,
+                chunk_end: r.chunk_end,
+                result_id: Some(make_id(&r.path, r.line)),
+            }).collect()
+        }
+    };
+    
+    // Convert to SearchResult with context
+    let mut results: Vec<SearchResult> = Vec::with_capacity(max_results.min(hybrid_results.len()));
+    let mut files_with_matches: HashSet<String> = HashSet::new();
+    
+    for hr in hybrid_results.iter().take(max_results) {
+        // Apply filters
+        if !matches_file_type(&hr.path, file_type) {
+            continue;
+        }
+        if !matches_glob_compiled(&hr.path, compiled_glob) {
+            continue;
+        }
+        if should_exclude_compiled(&hr.path, compiled_exclude) {
+            continue;
+        }
+        if config_exclude_patterns.iter().any(|p| should_exclude_compiled(&hr.path, Some(p))) {
+            continue;
+        }
+        
+        files_with_matches.insert(hr.path.clone());
+        
+        // Get context lines if needed
+        let (context_before, context_after) = if context > 0 && hr.line.is_some() {
+            get_context_lines(&root.join(&hr.path), hr.line.unwrap(), context)
+        } else {
+            (vec![], vec![])
+        };
+        
+        results.push(SearchResult {
+            path: hr.path.clone(),
+            score: hr.score,
+            snippet: hr.snippet.clone(),
+            line: hr.line,
+            context_before,
+            context_after,
+            text_score: Some(hr.text_score),
+            vector_score: Some(hr.vector_score),
+            hybrid_score: Some(hr.score),
+            result_id: hr.result_id.clone(),
+            chunk_start: hr.chunk_start,
+            chunk_end: hr.chunk_end,
+        });
+    }
+    
+    // Store in cache
+    if use_cache {
+        if let Ok(cache) = SearchCache::new(root, cache_ttl_ms) {
+            let to_cache: Vec<HybridResult> = hybrid_results.into_iter().take(max_results).collect();
+            let _ = cache.put(&cache_key, to_cache);
+        }
+    }
+    
+    let total_matches = results.len();
+    let files_count = files_with_matches.len();
+    
+    Ok(SearchOutcome {
+        results,
+        files_with_matches: files_count,
+        total_matches,
+        mode: IndexMode::Index,
     })
 }
 
