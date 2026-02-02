@@ -3,18 +3,47 @@
 ## Current Branch
 `feature/ai-agent-integration`
 
-## Commits Made
+## Session Summary (2026-02-03)
+
+### All Tasks Completed ✅
+
+1. **PR Created** - Used `gh pr create` with detailed description covering:
+   - Embedding infrastructure
+   - Hybrid search module
+   - Agent session cache
+   - CLI enhancements
+   - `cg` shortcut binary
+
+2. **AI Agent Install Files Updated**:
+   - `src/install/copilot.rs` - Added cg shortcut, --hybrid, --format json2, --agent-cache docs
+   - `src/install/codex.rs` - Added cg, --hybrid, --format json2, --agent-cache options
+   - `src/install/opencode.rs` - Added cg, --hybrid examples
+   - `src/install/claude_code.rs` - Added cg shortcut, --hybrid examples
+
+3. **Documentation Verified**:
+   - README.md has all new features documented
+   - Features section mentions hybrid search
+   - cg Shortcut section added
+   - CLI flags table includes all new options
+
+4. **CHANGELOG.md Updated**:
+   - Added v1.1.0 entry (scan mode, regex, context lines)
+   - Added v1.2.0 entry (hybrid search, embedding, cg, cache, json2)
+
+## Commits Made (7 total)
 1. `feat(embedding): Add embedding modules for vector storage and chunking`
 2. `feat(search): Integrate hybrid search mode into CLI and search module`
 3. `feat: Add cg shortcut binary`
 4. `feat(hybrid): Wire hybrid search into query execution`
+5. `docs: Update README with hybrid search and cg shortcut`
+6. `docs: Update CHANGELOG and AI agent installation files for v1.2.0`
 
 ## Completed Features
 
 ### 1. Embedding Modules ✅
 - `src/embedding/storage.rs` - SQLite-based embedding vector storage
 - `src/embedding/chunker.rs` - Text chunker for code embedding
-- `src/embedding/provider.rs` - Embedding provider trait + CommandProvider + DummyProvider
+- `src/embedding/provider.rs` - Embedding provider trait + implementations
 - `src/embedding/mod.rs` - Module exports
 
 ### 2. Hybrid Search Module ✅
@@ -48,19 +77,9 @@
 - All 37 library tests passing
 - All 16 integration tests passing
 
-## Pending Features
-
-### TUI Mode
-- PRD 5.4.4: Interactive TUI with ratatui
-- `cg` without args should launch TUI
-
-### Profile Presets
-- PRD 5.4.2: `--profile human|agent|fast`
-- Different defaults for each profile
-
-### Documentation
-- Update README with new features
-- Add examples for AI agent integration
+## Version Plan
+- Current main: v1.1.0
+- After merge: v1.2.0
 
 ## Verification Commands
 ```bash
@@ -78,10 +97,10 @@ cargo build --release
 
 # Test cg shortcut
 ./target/release/cg "query"
+
+# View PR
+gh pr view
 ```
 
-## Next Steps
-1. Add profile preset logic
-2. Implement TUI mode with ratatui
-3. Update documentation
-4. Create PR
+## PR URL
+Check with: `gh pr view --web`
