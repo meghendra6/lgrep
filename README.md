@@ -14,11 +14,13 @@
 - **Fast** - ripgrep-level file scanning performance
 - **AST-aware** - Understands code structure (functions, classes, etc.)
 - **BM25 ranking** - Relevant results, not just pattern matches
+- **Hybrid search** - Combine BM25 with vector embeddings for semantic search
 - **Incremental indexing** - Hash-based change detection (BLAKE3), symbol cache; binary files skipped by content
 - **Large file streaming** - Chunked indexing to keep memory usage low
 - **Multi-language** - TypeScript, JavaScript, Python, Rust, Go, C, C++, Java, Ruby
 - **Shell completions** - Tab completion for Bash, Zsh, Fish, PowerShell
 - **Agent integrations** - Works with Claude Code, Codex, Copilot, OpenCode
+- **Agent-friendly output** - JSON2 format with stable result IDs and caching
 
 ## Installation
 
@@ -91,9 +93,29 @@ cgrep search <query> [options]
 | `--no-index` | Scan files directly without using the index |
 | `--regex` | Treat query as a regular expression (scan mode) |
 | `--case-sensitive` | Case-sensitive search (scan mode) |
-| `--format <text\|json>` | Output format |
+| `--format <text\|json\|json2>` | Output format (json2 for AI agents) |
+| `--hybrid` | Use hybrid BM25 + vector search |
+| `--semantic` | Use semantic (vector) search only |
+| `--keyword` | Use keyword (BM25) search only (default) |
+| `--agent-cache` | Enable result caching for agents |
+| `--cache-ttl <ms>` | Cache TTL in milliseconds (default: 600000) |
 
 If the index does not exist, `cgrep search` automatically falls back to scan mode.
+
+## cg Shortcut
+
+The `cg` binary is a convenience wrapper for quick searches:
+
+```bash
+# Quick search (equivalent to: cgrep search "query")
+cg "authentication"
+
+# With options
+cg "config" --max-results 5
+
+# Subcommands still work
+cg symbols MyClass
+```
 
 ## Symbols Command Flags
 

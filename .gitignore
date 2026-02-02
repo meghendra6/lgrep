@@ -1,5 +1,10 @@
-# cgrep - local index
+/target
 .cgrep/
-# Rust build artefacts
-/target/
+
+# Development directories (not for public repo)
+.github/
+.vscode/
+local/
+
+# Rust
 Cargo.lock
