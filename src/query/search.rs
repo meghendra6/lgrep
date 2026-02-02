@@ -147,7 +147,7 @@ pub fn run(
 
     // Output based on format
     match format {
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Json2 => {
             println!("{}", serde_json::to_string_pretty(&outcome.results)?);
         }
         OutputFormat::Text => {

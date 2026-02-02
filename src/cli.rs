@@ -26,6 +26,20 @@ pub struct Cli {
 pub enum OutputFormat {
     Text,
     Json,
+    /// Structured JSON for AI agents (includes metadata)
+    Json2,
+}
+
+/// Search mode for queries
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum CliSearchMode {
+    /// BM25 keyword search only
+    #[default]
+    Keyword,
+    /// Embedding-based semantic search only
+    Semantic,
+    /// Combined BM25 + embedding search
+    Hybrid,
 }
 
 #[derive(Subcommand, Debug)]
@@ -63,6 +77,7 @@ pub enum Commands {
         /// Suppress statistics output
         #[arg(short = 'q', long)]
         quiet: bool,
+
         /// Enable fuzzy matching (allows 1-2 character differences)
         #[arg(short = 'f', long)]
         fuzzy: bool,
@@ -78,6 +93,38 @@ pub enum Commands {
         /// Case-sensitive search (scan mode)
         #[arg(long)]
         case_sensitive: bool,
+
+        /// Search mode: keyword, semantic, or hybrid
+        #[arg(long, value_enum)]
+        mode: Option<CliSearchMode>,
+
+        /// Use keyword search only (alias for --mode keyword)
+        #[arg(long, conflicts_with = "semantic", conflicts_with = "hybrid")]
+        keyword: bool,
+
+        /// Use semantic search only (alias for --mode semantic)
+        #[arg(long, conflicts_with = "keyword", conflicts_with = "hybrid")]
+        semantic: bool,
+
+        /// Use hybrid search (alias for --mode hybrid)
+        #[arg(long, conflicts_with = "keyword", conflicts_with = "semantic")]
+        hybrid: bool,
+
+        /// Use a preset profile (human, agent, fast)
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Context pack size for agent mode (merges overlapping context)
+        #[arg(long)]
+        context_pack: Option<usize>,
+
+        /// Enable agent session caching
+        #[arg(long)]
+        agent_cache: bool,
+
+        /// Cache TTL in milliseconds (default: 600000 = 10 minutes)
+        #[arg(long)]
+        cache_ttl: Option<u64>,
     },
 
     /// Search for symbols (functions, classes, etc.)
@@ -154,6 +201,14 @@ pub enum Commands {
         /// Force full reindex
         #[arg(short, long)]
         force: bool,
+
+        /// Embedding generation mode: auto, precompute, or off
+        #[arg(long, default_value = "auto")]
+        embeddings: String,
+
+        /// Force regeneration of all embeddings
+        #[arg(long)]
+        embeddings_force: bool,
     },
 
     /// Watch for file changes and update index

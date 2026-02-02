@@ -42,6 +42,14 @@ fn main() -> Result<()> {
             no_index,
             regex,
             case_sensitive,
+            mode: _,
+            keyword: _,
+            semantic: _,
+            hybrid: _,
+            profile: _,
+            context_pack: _,
+            agent_cache: _,
+            cache_ttl: _,
         } => {
             query::search::run(
                 &query,
@@ -95,7 +103,7 @@ fn main() -> Result<()> {
         Commands::Dependents { file } => {
             query::dependents::run(&file, format)?;
         }
-        Commands::Index { path, force } => {
+        Commands::Index { path, force, embeddings: _, embeddings_force: _ } => {
             indexer::index::run(path.as_deref(), force)?;
         }
         Commands::Watch { path } => {
