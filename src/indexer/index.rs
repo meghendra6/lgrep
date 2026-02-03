@@ -21,8 +21,7 @@ use tantivy::{
 
 use crate::indexer::scanner::{detect_language, FileScanner};
 use crate::parser::symbols::SymbolExtractor;
-
-const INDEX_DIR: &str = ".cgrep";
+use cgrep::utils::INDEX_DIR;
 const METADATA_FILE: &str = ".cgrep/metadata.json";
 
 /// Metadata for incremental indexing

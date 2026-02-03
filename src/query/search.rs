@@ -27,8 +27,7 @@ use cgrep::errors::IndexNotFoundError;
 use cgrep::filters::{matches_file_type, CompiledGlob, matches_glob_compiled, should_exclude_compiled};
 use cgrep::hybrid::{BM25Result, HybridConfig, HybridResult, HybridSearcher, SearchMode as HybridSearchMode};
 use cgrep::output::{use_colors, colorize_path, colorize_line_num, colorize_match, colorize_context};
-
-const INDEX_DIR: &str = ".cgrep";
+use cgrep::utils::INDEX_DIR;
 const DEFAULT_CACHE_TTL_MS: u64 = 600_000; // 10 minutes
 
 /// Search result for JSON output
@@ -109,12 +108,20 @@ pub fn run(
         .filter_map(|p| CompiledGlob::new(p.as_str()))
         .collect();
     
-    let root = path
+    let requested_root = path
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .ok_or_else(|| anyhow::anyhow!("Cannot determine current directory"))?;
 
-    let index_path = root.join(INDEX_DIR);
+    // Find index root (may be in parent directory)
+    let (root, index_path, using_parent) = match cgrep::utils::find_index_root(&requested_root) {
+        Some(index_root) => (index_root.root.clone(), index_root.index_path, index_root.is_parent),
+        None => (requested_root.clone(), requested_root.join(INDEX_DIR), false),
+    };
+
+    if using_parent {
+        eprintln!("Using index from: {}", root.display());
+    }
 
     let requested_mode = if no_index || regex {
         IndexMode::Scan

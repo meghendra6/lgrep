@@ -14,6 +14,7 @@ use crate::parser::symbols::SymbolExtractor;
 use cgrep::config::Config;
 use cgrep::filters::{matches_file_type, CompiledGlob, matches_glob_compiled, should_exclude_compiled};
 use cgrep::output::{use_colors, colorize_path, colorize_line_num, colorize_kind, colorize_name};
+use cgrep::utils::get_root_with_index;
 
 /// Symbol result for JSON output
 #[derive(Debug, Serialize)]
@@ -52,7 +53,7 @@ pub fn run(
         .filter_map(|p| CompiledGlob::new(p.as_str()))
         .collect();
     
-    let root = std::env::current_dir()?;
+    let root = get_root_with_index(std::env::current_dir()?);
     let scanner = FileScanner::new(&root);
     let extractor = SymbolExtractor::new();
 

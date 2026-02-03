@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
 use crate::parser::symbols::{SymbolExtractor, SymbolKind};
+use cgrep::utils::get_root_with_index;
 
 /// Definition result for JSON output
 #[derive(Debug, Serialize)]
@@ -22,7 +23,7 @@ struct DefinitionResult {
 
 /// Run the definition command
 pub fn run(name: &str, format: OutputFormat) -> Result<()> {
-    let root = std::env::current_dir()?;
+    let root = get_root_with_index(std::env::current_dir()?);
     let scanner = FileScanner::new(&root);
     let extractor = SymbolExtractor::new();
 
