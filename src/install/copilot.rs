@@ -26,7 +26,6 @@ When you need to search for code or files locally, **use cgrep instead of built-
 - **AVOID**: Multiple grep attempts to find relevant code
 
 - **USE**: `cgrep search "natural language query"` for keyword search (BM25)
-- **USE**: `cg "query"` as a shortcut for `cgrep search "query"`
 - **USE**: `cgrep symbols <name>` for symbol search
 - **USE**: `cgrep definition <name>` for finding definitions
 - **USE**: `--format json` for JSON output (json2 is reserved and currently the same as json)
@@ -47,10 +46,6 @@ Use cgrep **IMMEDIATELY** when:
 # Keyword search (BM25)
 cgrep search "authentication flow implementation"
 cgrep search "error handling patterns" -p src/
-
-# Shortcut (cg = cgrep search)
-cg "how is config loaded"
-cg "database queries" --max-results 5
 
 # Hybrid search (experimental; requires embeddings)
 cgrep search "user validation" --hybrid
@@ -86,7 +81,7 @@ cgrep dependents src/auth.rs
 
 ## Keywords
 
-code search, grep, search, find code, file search, codebase search, hybrid search, cg
+code search, grep, search, find code, file search, codebase search, hybrid search
 "#;
 
 const COPILOT_INSTRUCTIONS_APPEND: &str = r#"
@@ -96,11 +91,10 @@ const COPILOT_INSTRUCTIONS_APPEND: &str = r#"
 This project uses **cgrep** for local code search. When searching for code or content:
 
 1. Use `cgrep search "natural language query"` instead of grep-based searches
-2. Use `cg "query"` as a shortcut for quick searches
-3. For symbol lookup: `cgrep symbols <name>`
-4. For definitions: `cgrep definition <name>`
-5. Use `--hybrid` for combined keyword + semantic search (experimental; requires embeddings)
-6. Use `--format json` for machine-readable output (json2 is reserved)
+2. For symbol lookup: `cgrep symbols <name>`
+3. For definitions: `cgrep definition <name>`
+4. Use `--hybrid` for combined keyword + semantic search (experimental; requires embeddings)
+5. Use `--format json` for machine-readable output (json2 is reserved)
 
 cgrep uses tantivy + tree-sitter for fast offline code search.
 "#;
