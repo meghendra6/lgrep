@@ -15,10 +15,11 @@ pub struct ScannedFile {
     pub language: Option<String>,
 }
 
-/// File scanner that respects .gitignore
+/// File scanner that respects .gitignore and custom excludes
 pub struct FileScanner {
     root: PathBuf,
     extensions: Vec<String>,
+    exclude_patterns: Vec<String>,
 }
 
 impl FileScanner {
@@ -32,7 +33,15 @@ impl FileScanner {
                 "swift".into(), "kt".into(), "scala".into(), "lua".into(),
                 "md".into(), "txt".into(), "json".into(), "yaml".into(), "toml".into(),
             ],
+            exclude_patterns: Vec::new(),
         }
+    }
+
+    /// Create scanner with exclude patterns
+    pub fn with_excludes(root: impl AsRef<Path>, excludes: Vec<String>) -> Self {
+        let mut scanner = Self::new(root);
+        scanner.exclude_patterns = excludes;
+        scanner
     }
 
     /// Scan all files in the directory
@@ -53,14 +62,26 @@ impl FileScanner {
             .build_parallel();
 
         let extensions = self.extensions.clone();
+        let exclude_patterns = self.exclude_patterns.clone();
 
         walker.run(|| {
             let tx = tx.clone();
             let extensions = extensions.clone();
+            let exclude_patterns = exclude_patterns.clone();
 
             Box::new(move |entry| {
                 if let Ok(entry) = entry {
                     let path = entry.path();
+
+                    // Check if path should be excluded
+                    if !exclude_patterns.is_empty() {
+                        let path_str = path.to_string_lossy();
+                        for pattern in &exclude_patterns {
+                            if path_str.contains(pattern.as_str()) {
+                                return ignore::WalkState::Continue;
+                            }
+                        }
+                    }
 
                     if path.is_file() {
                         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -104,14 +125,27 @@ impl FileScanner {
             .build_parallel();
 
         let extensions = self.extensions.clone();
+        let exclude_patterns = self.exclude_patterns.clone();
 
         walker.run(|| {
             let tx = tx.clone();
             let extensions = extensions.clone();
+            let exclude_patterns = exclude_patterns.clone();
 
             Box::new(move |entry| {
                 if let Ok(entry) = entry {
                     let path = entry.path();
+
+                    // Check if path should be excluded
+                    if !exclude_patterns.is_empty() {
+                        let path_str = path.to_string_lossy();
+                        for pattern in &exclude_patterns {
+                            if path_str.contains(pattern.as_str()) {
+                                return ignore::WalkState::Continue;
+                            }
+                        }
+                    }
+
                     if path.is_file() {
                         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                             if extensions.contains(&ext.to_lowercase()) {

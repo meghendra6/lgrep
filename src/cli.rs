@@ -209,6 +209,10 @@ pub enum Commands {
         /// Force regeneration of all embeddings
         #[arg(long)]
         embeddings_force: bool,
+
+        /// Paths/patterns to exclude (can be specified multiple times)
+        #[arg(long = "exclude", short = 'e')]
+        exclude_paths: Vec<String>,
     },
 
     /// Watch for file changes and update index
