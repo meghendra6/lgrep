@@ -62,6 +62,14 @@ pub struct EmbeddingStorage {
     path: PathBuf,
 }
 
+/// Input chunk data for bulk embedding writes.
+pub struct EmbeddingChunkInput<'a> {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub content_hash: &'a str,
+    pub embedding: &'a [f32],
+}
+
 impl EmbeddingStorage {
     /// Opens or creates an embedding storage at the specified path.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -160,6 +168,65 @@ impl EmbeddingStorage {
         ).context("Failed to store embedding chunk")?;
 
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Replaces all embeddings for a file in a single transaction.
+    ///
+    /// This deletes any existing chunks for the file and then inserts the new chunks and file info.
+    pub fn replace_file_embeddings(
+        &mut self,
+        path: &str,
+        file_hash: &str,
+        last_modified: i64,
+        chunks: &[EmbeddingChunkInput<'_>],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+
+        tx.execute(
+            "DELETE FROM embedding_chunks WHERE path = ?1",
+            params![path],
+        )?;
+        tx.execute("DELETE FROM embedding_files WHERE path = ?1", params![path])?;
+
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        {
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO embedding_chunks (path, start_line, end_line, content_hash, embedding, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+            )?;
+            for chunk in chunks {
+                let embedding_blob = Self::embedding_to_blob(chunk.embedding);
+                stmt.execute(params![
+                    path,
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.content_hash,
+                    embedding_blob,
+                    created_at
+                ])?;
+            }
+        }
+
+        tx.execute(
+            r#"
+            INSERT INTO embedding_files (path, file_hash, last_modified, chunk_count)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(path) DO UPDATE SET
+                file_hash = excluded.file_hash,
+                last_modified = excluded.last_modified,
+                chunk_count = excluded.chunk_count
+            "#,
+            params![path, file_hash, last_modified, chunks.len() as u32],
+        )?;
+
+        tx.commit()?;
+        Ok(())
     }
 
     /// Retrieves all embedding chunks for a given file path.

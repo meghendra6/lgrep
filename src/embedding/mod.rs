@@ -12,5 +12,6 @@ pub mod storage;
 pub use chunker::{ChunkConfig, EmbeddingChunker, TextChunk};
 pub use provider::{EmbeddingProvider, EmbeddingProviderConfig, EmbeddingResult};
 pub use storage::{
-    EmbeddingChunk, EmbeddingStorage, FileEmbeddingInfo, SimilarityResult, DEFAULT_EMBEDDING_DIM,
+    EmbeddingChunk, EmbeddingChunkInput, EmbeddingStorage, FileEmbeddingInfo, SimilarityResult,
+    DEFAULT_EMBEDDING_DIM,
 };
