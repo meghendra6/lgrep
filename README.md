@@ -139,8 +139,8 @@ Index:
 -f, --force              Force full reindex
  -e, --exclude <pattern>  Exclude path/pattern (repeatable)
     --high-memory        Use a 1GiB writer budget for faster indexing
-    --embeddings <mode>  auto|precompute|off (accepted, not wired yet)
-    --embeddings-force   Force regenerate embeddings (accepted, not wired yet)
+    --embeddings <mode>  auto|precompute|off (default: auto)
+    --embeddings-force   Force regenerate embeddings
 ```
 
 Watch:
@@ -166,26 +166,44 @@ text_score, vector_score, hybrid_score, result_id, chunk_start, chunk_end
 ```
 Optional fields appear only in hybrid/semantic mode.
 
-## Embeddings (current state)
+## Embeddings
 
 The repository includes:
 - Chunking logic (default: 80 lines per chunk, 20 lines overlap)
 - SQLite storage at `.cgrep/embeddings.sqlite`
 - Provider interface for generating embeddings
 
-Current limitations:
-- `cgrep index` does NOT generate embeddings yet. The `--embeddings` flags are
-  accepted by the CLI but not wired to the indexer.
-- `cgrep search --semantic/--hybrid` uses a dummy embedding provider for query
-  embeddings (placeholder). Without a real provider and stored embeddings,
-  semantic scoring is not meaningful.
+### Generating embeddings during indexing
 
-If you want real semantic search today, you must:
-1) Generate embeddings externally.
-2) Store them in `.cgrep/embeddings.sqlite` using the schema in
-   `src/embedding/storage.rs`.
-3) Wire a real embedding provider into the search path (library has a command
-   provider interface, but the CLI does not use it yet).
+- `cgrep index --embeddings precompute`: generate embeddings for all indexed files (fails if the embedding provider is unavailable).
+- `cgrep index --embeddings auto`: best-effort (if the provider is unavailable, indexing continues without embeddings).
+- `cgrep index --embeddings off`: disable embedding generation.
+- `cgrep index --embeddings-force`: clear and regenerate all embeddings (useful when changing the embedding model/provider).
+
+Embeddings are stored at `.cgrep/embeddings.sqlite` under the indexed root.
+
+### Provider configuration
+
+Configure embeddings in `.cgreprc.toml`:
+
+```toml
+[embeddings]
+provider = "command"  # command|dummy
+command = "embedder"  # defaults to "embedder"
+model = "local-model-id"
+
+chunk_lines = 80
+chunk_overlap = 20
+max_file_bytes = 2000000
+```
+
+`provider = "dummy"` is intended for tests/dev only (returns zero vectors).
+
+### Using embeddings in search
+
+If `.cgrep/embeddings.sqlite` exists, `cgrep search --semantic/--hybrid` will use it for embedding-based reranking.
+Query embeddings are generated using the configured provider in `.cgreprc.toml`.
+If the embedding DB or provider is unavailable, it falls back to BM25-only search.
 
 ## Indexing behavior
 
@@ -214,6 +232,11 @@ exclude_patterns = ["target/**", "node_modules/**"]
 
 [index]
 exclude_paths = ["vendor/", "dist/"]
+
+[embeddings]
+provider = "command"
+command = "embedder"
+model = "local-model-id"
 ```
 Note: `max_results` is read but the CLI always supplies a default value, so the
 config value currently has no effect unless the CLI defaults change.
@@ -223,7 +246,6 @@ config value currently has no effect unless the CLI defaults change.
 Parsed but not applied yet (reserved):
 - `index.max_file_size`
 - `[search]` (mode, weights, candidate_k)
-- `[embeddings]` (provider, model, chunking)
 - `[cache]` (enabled, ttl)
 - `[profile.*]` presets
 - `default_format` (only text/json supported in code path)
