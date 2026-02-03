@@ -216,6 +216,10 @@ pub enum Commands {
         /// Path to watch (defaults to current directory)
         #[arg(short, long)]
         path: Option<String>,
+
+        /// Debounce interval in seconds (default: 2)
+        #[arg(long, default_value = "2")]
+        debounce: u64,
     },
 
     /// Install cgrep for Claude Code

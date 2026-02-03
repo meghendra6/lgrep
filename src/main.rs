@@ -128,8 +128,8 @@ fn main() -> Result<()> {
         Commands::Index { path, force, embeddings: _, embeddings_force: _ } => {
             indexer::index::run(path.as_deref(), force)?;
         }
-        Commands::Watch { path } => {
-            indexer::watch::run(path.as_deref())?;
+        Commands::Watch { path, debounce } => {
+            indexer::watch::run(path.as_deref(), Some(debounce))?;
         }
 
         // Agent installation commands
