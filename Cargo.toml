@@ -21,10 +21,6 @@ path = "src/lib.rs"
 name = "cgrep"
 path = "src/main.rs"
 
-[[bin]]
-name = "cg"
-path = "src/bin/cg.rs"
-
 [dependencies]
 # CLI framework
 clap = { version = "4", features = ["derive", "color"] }

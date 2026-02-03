@@ -30,7 +30,6 @@ are experimental and require embeddings.
 ```bash
 cgrep search "What code parsers are available?"
 cgrep search "How are chunks defined?" -m 10
-cg "config validation" --max-results 5
 cgrep search "user authentication" --hybrid
 cgrep symbols MyFunction -t function
 cgrep definition MyClass

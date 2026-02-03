@@ -26,7 +26,6 @@ Hybrid/semantic modes are experimental and require embeddings.
 ```bash
 cgrep search "authentication flow"       # BM25 keyword search
 cgrep search "error handling" -m 10      # limit results
-cg "config validation"                   # shortcut
 cgrep search "user auth" --hybrid        # experimental (requires embeddings)
 cgrep symbols MyClass                     # find symbol definitions
 cgrep definition handleClick              # find function definition

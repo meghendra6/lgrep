@@ -17,7 +17,6 @@ binary. Includes scan mode fallback and experimental hybrid/semantic search.
 ```bash
 cargo build --release
 cp target/release/cgrep ~/.local/bin/
-cp target/release/cg ~/.local/bin/
 ```
 
 ### With cargo
@@ -44,12 +43,6 @@ cgrep references MyClass
 
 # File dependency search
 cgrep dependents src/auth.rs
-```
-
-Shortcut:
-```bash
-# cg is a thin wrapper around cgrep
-cg "authentication flow"
 ```
 
 ## Commands
@@ -257,7 +250,6 @@ cgrep uninstall-opencode
 
 ## Known limitations
 
-- `cg` with no arguments shows `cgrep --help` (TUI is not implemented yet).
 - `--profile` and `--context-pack` are accepted by the CLI but not applied.
 - `--format json2` currently outputs the same structure as `json`.
 

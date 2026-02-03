@@ -12,7 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Embedding Storage**: SQLite-based persistent storage for embedding vectors with incremental updates
 - **Code Chunker**: Configurable chunking for code embedding (80 lines default, 20 lines overlap)
 - **Embedding Provider**: Trait-based interface with CommandProvider and DummyProvider implementations
-- **`cg` Shortcut**: Convenience binary where `cg <query>` equals `cgrep search <query>`
 - **Agent Session Cache**: File-based cache with TTL support for repeated queries
 - **New CLI flags**:
   - `--hybrid` - Use hybrid BM25 + vector search
@@ -27,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Search module refactored to support multiple search modes
 - Improved agent integration documentation in install commands
+
+### Removed
+- `cg` shortcut binary. Use `cgrep search <query>` directly.
 
 ## [1.1.0] - 2026-02-02
 
