@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
+use cgrep::utils::get_root_with_index;
 
 /// Caller result for JSON output
 #[derive(Debug, Serialize)]
@@ -20,7 +21,7 @@ struct CallerResult {
 
 /// Run the callers command
 pub fn run(function: &str, format: OutputFormat) -> Result<()> {
-    let root = std::env::current_dir()?;
+    let root = get_root_with_index(std::env::current_dir()?);
     let scanner = FileScanner::new(&root);
     let files = scanner.scan()?;
 
