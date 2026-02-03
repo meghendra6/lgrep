@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
+use cgrep::utils::get_root_with_index;
 
 /// Reference result for JSON output
 #[derive(Debug, Serialize)]
@@ -22,8 +23,8 @@ struct ReferenceResult {
 /// Run the references command
 pub fn run(name: &str, path: Option<&str>, max_results: usize, format: OutputFormat) -> Result<()> {
     let root = match path {
-        Some(p) => std::path::PathBuf::from(p).canonicalize()?,
-        None => std::env::current_dir()?,
+        Some(p) => get_root_with_index(std::path::PathBuf::from(p).canonicalize()?),
+        None => get_root_with_index(std::env::current_dir()?),
     };
     let scanner = FileScanner::new(&root);
     let files = scanner.scan()?;

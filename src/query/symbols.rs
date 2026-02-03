@@ -2,18 +2,21 @@
 
 //! Symbol search command
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+use tantivy::{collector::TopDocs, query::QueryParser, schema::Value, Index, ReloadPolicy, TantivyDocument};
 
 use crate::cli::OutputFormat;
-use crate::indexer::scanner::FileScanner;
+use crate::indexer::scanner::{detect_language, FileScanner, ScannedFile};
 use crate::parser::symbols::SymbolExtractor;
 use cgrep::config::Config;
 use cgrep::filters::{matches_file_type, CompiledGlob, matches_glob_compiled, should_exclude_compiled};
 use cgrep::output::{use_colors, colorize_path, colorize_line_num, colorize_kind, colorize_name};
+use cgrep::utils::{get_root_with_index, INDEX_DIR};
 
 /// Symbol result for JSON output
 #[derive(Debug, Serialize)]
@@ -22,6 +25,61 @@ struct SymbolResult {
     kind: String,
     path: String,
     line: usize,
+}
+
+/// Search the tantivy index for files containing a symbol name.
+/// Returns None if no index exists, falling back to full scan.
+fn find_files_with_symbol(root: &Path, symbol_name: &str) -> Result<Option<Vec<PathBuf>>> {
+    let index_path = root.join(INDEX_DIR);
+    if !index_path.exists() {
+        return Ok(None); // No index, fall back to scan
+    }
+
+    let index = match Index::open_in_dir(&index_path) {
+        Ok(idx) => idx,
+        Err(_) => return Ok(None),
+    };
+
+    let reader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()
+        .context("Failed to create index reader")?;
+
+    let searcher = reader.searcher();
+    let schema = index.schema();
+
+    // Get the symbols and path fields
+    let symbols_field = schema.get_field("symbols").ok();
+    let path_field = schema.get_field("path").ok();
+
+    let (symbols_field, path_field) = match (symbols_field, path_field) {
+        (Some(s), Some(p)) => (s, p),
+        _ => return Ok(None),
+    };
+
+    // Build a query for the symbol name (case-insensitive via tantivy tokenization)
+    let query_parser = QueryParser::for_index(&index, vec![symbols_field]);
+    let query = match query_parser.parse_query(&symbol_name.to_lowercase()) {
+        Ok(q) => q,
+        Err(_) => return Ok(None),
+    };
+
+    // Search for matching documents - get up to 10000 files
+    let top_docs = searcher.search(&query, &TopDocs::with_limit(10000))?;
+
+    let mut file_paths = Vec::with_capacity(top_docs.len());
+    for (_score, doc_address) in top_docs {
+        if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address) {
+            if let Some(path_value) = doc.get_first(path_field) {
+                if let Some(path_str) = path_value.as_str() {
+                    file_paths.push(root.join(path_str));
+                }
+            }
+        }
+    }
+
+    Ok(Some(file_paths))
 }
 
 /// Run the symbols command
@@ -52,12 +110,36 @@ pub fn run(
         .filter_map(|p| CompiledGlob::new(p.as_str()))
         .collect();
     
-    let root = std::env::current_dir()?;
-    let scanner = FileScanner::new(&root);
+    let root = get_root_with_index(std::env::current_dir()?);
     let extractor = SymbolExtractor::new();
-
-    let files = scanner.scan()?;
     let name_lower = name.to_lowercase();
+
+    // Try to use index for fast file filtering first
+    let files: Vec<ScannedFile> = match find_files_with_symbol(&root, name)? {
+        Some(indexed_paths) if !indexed_paths.is_empty() => {
+            // Only read the files that the index tells us contain the symbol
+            let mut scanned = Vec::with_capacity(indexed_paths.len());
+            for path in indexed_paths {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let language = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .and_then(detect_language);
+                    scanned.push(ScannedFile {
+                        path: path.clone(),
+                        content,
+                        language,
+                    });
+                }
+            }
+            scanned
+        }
+        _ => {
+            // Fall back to full scan if no index
+            let scanner = FileScanner::new(&root);
+            scanner.scan()?
+        }
+    };
 
     let mut results: Vec<SymbolResult> = Vec::new();
     let mut files_searched: HashSet<String> = HashSet::new();

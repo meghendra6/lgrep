@@ -209,6 +209,10 @@ pub enum Commands {
         /// Force regeneration of all embeddings
         #[arg(long)]
         embeddings_force: bool,
+
+        /// Paths/patterns to exclude (can be specified multiple times)
+        #[arg(long = "exclude", short = 'e')]
+        exclude_paths: Vec<String>,
     },
 
     /// Watch for file changes and update index
@@ -216,6 +220,10 @@ pub enum Commands {
         /// Path to watch (defaults to current directory)
         #[arg(short, long)]
         path: Option<String>,
+
+        /// Debounce interval in seconds (default: 2)
+        #[arg(long, default_value = "2")]
+        debounce: u64,
     },
 
     /// Install cgrep for Claude Code

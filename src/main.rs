@@ -125,11 +125,18 @@ fn main() -> Result<()> {
         Commands::Dependents { file } => {
             query::dependents::run(&file, format)?;
         }
-        Commands::Index { path, force, embeddings: _, embeddings_force: _ } => {
-            indexer::index::run(path.as_deref(), force)?;
+        Commands::Index { path, force, embeddings: _, embeddings_force: _, exclude_paths } => {
+            // Load config for additional exclude paths
+            let config = cgrep::config::Config::load();
+            
+            // Merge CLI excludes with config excludes (CLI takes precedence by being added first)
+            let mut all_excludes = exclude_paths;
+            all_excludes.extend(config.index().exclude_paths().iter().cloned());
+            
+            indexer::index::run(path.as_deref(), force, all_excludes)?;
         }
-        Commands::Watch { path } => {
-            indexer::watch::run(path.as_deref())?;
+        Commands::Watch { path, debounce } => {
+            indexer::watch::run(path.as_deref(), Some(debounce))?;
         }
 
         // Agent installation commands
