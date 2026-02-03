@@ -137,8 +137,14 @@ Index:
 ```
 -p, --path <path>        Path to index
 -f, --force              Force full reindex
+ -e, --exclude <pattern>  Exclude path/pattern (repeatable)
     --embeddings <mode>  auto|precompute|off (accepted, not wired yet)
     --embeddings-force   Force regenerate embeddings (accepted, not wired yet)
+```
+
+Watch:
+```
+    --debounce <seconds>  Debounce interval for reindex (default: 2)
 ```
 
 ## Output formats
@@ -183,10 +189,16 @@ If you want real semantic search today, you must:
 ## Indexing behavior
 
 - Index is stored under `.cgrep/`.
+- Search looks for the nearest parent `.cgrep` directory and uses that index
+  when you run it from a subdirectory (it prints a notice when this happens).
 - Incremental indexing uses BLAKE3 hashes to skip unchanged files.
 - Binary files are skipped.
 - Large files are chunked (~1MB per document) to limit memory use.
 - `.gitignore` is respected.
+- `cgrep watch` debounces file events (default: 2s) and rate-limits reindexing
+  (minimum 5s between reindexes).
+- `cgrep symbols` uses the index (when available) to narrow candidate files,
+  falling back to a full scan if no index exists.
 
 ## Configuration
 
@@ -198,11 +210,17 @@ Currently used fields:
 ```toml
 max_results = 20
 exclude_patterns = ["target/**", "node_modules/**"]
+
+[index]
+exclude_paths = ["vendor/", "dist/"]
 ```
 Note: `max_results` is read but the CLI always supplies a default value, so the
 config value currently has no effect unless the CLI defaults change.
+`[index].exclude_paths` is applied during indexing and is combined with any
+`cgrep index --exclude` flags (CLI flags take precedence by being applied first).
 
 Parsed but not applied yet (reserved):
+- `index.max_file_size`
 - `[search]` (mode, weights, candidate_k)
 - `[embeddings]` (provider, model, chunking)
 - `[cache]` (enabled, ttl)
