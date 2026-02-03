@@ -210,6 +210,10 @@ pub enum Commands {
         #[arg(long)]
         embeddings_force: bool,
 
+        /// Use a high-memory index writer (1GiB budget)
+        #[arg(long)]
+        high_memory: bool,
+
         /// Paths/patterns to exclude (can be specified multiple times)
         #[arg(long = "exclude", short = 'e')]
         exclude_paths: Vec<String>,

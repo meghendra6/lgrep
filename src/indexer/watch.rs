@@ -124,7 +124,7 @@ impl Watcher {
                     last_event_time = None;
                     
                     let start = Instant::now();
-                    if let Err(e) = builder.build(false) {
+                    if let Err(e) = builder.build(false, crate::indexer::index::DEFAULT_WRITER_BUDGET_BYTES) {
                         eprintln!("{} Reindex failed: {}", "✗".red(), e);
                     } else {
                         println!("{} Reindex complete in {:.1}s", "✓".green(), start.elapsed().as_secs_f64());
@@ -153,7 +153,7 @@ pub fn run(path: Option<&str>, debounce_secs: Option<u64>) -> Result<()> {
 
     // Build initial index
     let builder = IndexBuilder::new(&root)?;
-    builder.build(false)?;
+    builder.build(false, crate::indexer::index::DEFAULT_WRITER_BUDGET_BYTES)?;
 
     // Start watching with optional custom debounce
     let watcher = match debounce_secs {

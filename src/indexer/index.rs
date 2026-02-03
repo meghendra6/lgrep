@@ -23,6 +23,8 @@ use crate::indexer::scanner::{detect_language, FileScanner};
 use crate::parser::symbols::SymbolExtractor;
 use cgrep::utils::INDEX_DIR;
 const METADATA_FILE: &str = ".cgrep/metadata.json";
+pub(crate) const DEFAULT_WRITER_BUDGET_BYTES: usize = 50_000_000;
+const HIGH_MEMORY_WRITER_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Metadata for incremental indexing
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -247,7 +249,7 @@ impl IndexBuilder {
     }
 
     /// Build or rebuild the index (with incremental support)
-    pub fn build(&self, force: bool) -> Result<usize> {
+    pub fn build(&self, force: bool, writer_budget_bytes: usize) -> Result<usize> {
         let index_path = self.root.join(INDEX_DIR);
         let metadata_path = self.root.join(METADATA_FILE);
 
@@ -277,7 +279,7 @@ impl IndexBuilder {
         };
 
         let mut writer: IndexWriter = index
-            .writer(50_000_000) // 50MB heap
+            .writer(writer_budget_bytes)
             .context("Failed to create index writer")?;
 
         let scanner = FileScanner::with_excludes(&self.root, self.exclude_patterns.clone())
@@ -519,14 +521,20 @@ impl IndexBuilder {
 }
 
 /// Run the index command
-pub fn run(path: Option<&str>, force: bool, excludes: Vec<String>) -> Result<()> {
+pub fn run(path: Option<&str>, force: bool, excludes: Vec<String>, high_memory: bool) -> Result<()> {
     let root = path
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .ok_or_else(|| anyhow::anyhow!("Cannot determine current directory"))?;
 
     let builder = IndexBuilder::with_excludes(&root, excludes)?;
-    let count = builder.build(force)?;
+    let writer_budget_bytes = if high_memory {
+        eprintln!("Using high-memory indexing: writer budget = 1GiB");
+        HIGH_MEMORY_WRITER_BUDGET_BYTES
+    } else {
+        DEFAULT_WRITER_BUDGET_BYTES
+    };
+    let count = builder.build(force, writer_budget_bytes)?;
 
     println!("Index complete: {} files", count);
     Ok(())
@@ -552,10 +560,10 @@ mod tests {
         std::fs::write(root.join("two.txt"), "hello").expect("write two");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let first = builder.build(false).expect("first build");
+        let first = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("first build");
         assert_eq!(first, 2);
 
-        let second = builder.build(false).expect("second build");
+        let second = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("second build");
         assert_eq!(second, 0);
     }
 
@@ -569,7 +577,7 @@ mod tests {
         std::fs::write(root.join("main.rs"), "fn main() {}").expect("write main");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let indexed = builder.build(false).expect("build");
+        let indexed = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("build");
         assert_eq!(indexed, 2);
     }
 
@@ -581,12 +589,12 @@ mod tests {
         std::fs::write(&file_path, "fn a() {}").expect("write one");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let first = builder.build(false).expect("first build");
+        let first = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("first build");
         assert_eq!(first, 1);
 
         std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(&file_path, "fn a() {}").expect("touch same content");
-        let second = builder.build(false).expect("second build");
+        let second = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("second build");
         assert_eq!(second, 0);
     }
 
@@ -598,12 +606,12 @@ mod tests {
         std::fs::write(&file_path, "fn a() {}").expect("write one");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let first = builder.build(false).expect("first build");
+        let first = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("first build");
         assert_eq!(first, 1);
 
         std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(&file_path, "fn b() {}").expect("write two");
-        let second = builder.build(false).expect("second build");
+        let second = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("second build");
         assert_eq!(second, 1);
     }
 
@@ -615,7 +623,7 @@ mod tests {
         std::fs::write(root.join("bin.rs"), vec![0, 159, 146, 150]).expect("write bin");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let first = builder.build(false).expect("first build");
+        let first = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("first build");
         assert_eq!(first, 1);
 
         let metadata = load_metadata(root);
@@ -632,7 +640,7 @@ mod tests {
         std::fs::write(root.join("bad.rs"), vec![0xFF, 0xFE, 0xFD]).expect("write bad");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let count = builder.build(false).expect("build");
+        let count = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("build");
         assert_eq!(count, 0);
 
         let metadata = load_metadata(root);
@@ -648,10 +656,10 @@ mod tests {
         std::fs::write(root.join("bin.rs"), vec![0, 1, 2, 3]).expect("write bin");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let first = builder.build(false).expect("first build");
+        let first = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("first build");
         assert_eq!(first, 0);
 
-        let second = builder.build(false).expect("second build");
+        let second = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("second build");
         assert_eq!(second, 0);
     }
 
@@ -662,7 +670,7 @@ mod tests {
         std::fs::write(root.join("lib.rs"), "fn cached_symbol() {}").expect("write lib");
 
         let builder = IndexBuilder::new(root).expect("builder");
-        let count = builder.build(false).expect("build");
+        let count = builder.build(false, DEFAULT_WRITER_BUDGET_BYTES).expect("build");
         assert_eq!(count, 1);
 
         let metadata = load_metadata(root);
