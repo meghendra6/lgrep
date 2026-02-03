@@ -245,6 +245,7 @@ dependencies = [
  "dirs",
  "ignore",
  "indicatif",
+ "memmap2",
  "notify",
  "once_cell",
  "predicates",

@@ -10,10 +10,10 @@ use rayon::ThreadPoolBuilder;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::BufRead;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::SystemTime;
+use memmap2::Mmap;
 use tantivy::{
     schema::{Field, Schema, STORED, STRING, TEXT, Term},
     Index, IndexWriter, TantivyDocument,
@@ -107,36 +107,60 @@ enum ReadOutcome {
 
 fn read_text_chunks(path: &Path, max_doc_bytes: usize) -> Result<ReadOutcome> {
     let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
-    let mut hasher = blake3::Hasher::new();
+    if let Ok(mmap) = unsafe { Mmap::map(&file) } {
+        return read_text_chunks_from_bytes(&mmap, max_doc_bytes);
+    }
+
+    let bytes = std::fs::read(path)?;
+    read_text_chunks_from_bytes(&bytes, max_doc_bytes)
+}
+
+fn read_text_chunks_from_bytes(bytes: &[u8], max_doc_bytes: usize) -> Result<ReadOutcome> {
+    if bytes.iter().any(|&b| b == 0) {
+        return Ok(ReadOutcome::Binary { hash: None });
+    }
+
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => return Ok(ReadOutcome::Binary { hash: None }),
+    };
+
+    let hash = blake3::hash(bytes).to_hex().to_string();
+    let chunks = build_chunks(text, max_doc_bytes);
+    Ok(ReadOutcome::Text { chunks, hash })
+}
+
+fn build_chunks(text: &str, max_doc_bytes: usize) -> Vec<TextChunk> {
+    let bytes = text.as_bytes();
     let mut chunks: Vec<TextChunk> = Vec::new();
     let mut current_chunk = String::new();
     let mut chunk_start_line: u64 = 1;
     let mut current_line: u64 = 0;
-    let mut line = String::new();
+    let mut line_start: usize = 0;
 
-    loop {
-        line.clear();
-        let read = match reader.read_line(&mut line) {
-            Ok(read) => read,
-            Err(err) => {
-                if err.kind() == std::io::ErrorKind::InvalidData {
-                    return Ok(ReadOutcome::Binary { hash: None });
-                }
-                return Err(err.into());
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if byte == b'\n' {
+            let line_end = idx + 1;
+            current_line += 1;
+            let line = &text[line_start..line_end];
+
+            if current_chunk.len() + line.len() > max_doc_bytes && !current_chunk.is_empty() {
+                let content = std::mem::take(&mut current_chunk);
+                chunks.push(TextChunk {
+                    start_line: chunk_start_line,
+                    content,
+                });
+                chunk_start_line = current_line;
             }
-        };
-        if read == 0 {
-            break;
-        }
 
+            current_chunk.push_str(line);
+            line_start = line_end;
+        }
+    }
+
+    if line_start < bytes.len() {
         current_line += 1;
-        if line.as_bytes().iter().any(|&b| b == 0) {
-            return Ok(ReadOutcome::Binary { hash: None });
-        }
-
-        hasher.update(line.as_bytes());
-
+        let line = &text[line_start..];
         if current_chunk.len() + line.len() > max_doc_bytes && !current_chunk.is_empty() {
             let content = std::mem::take(&mut current_chunk);
             chunks.push(TextChunk {
@@ -145,8 +169,7 @@ fn read_text_chunks(path: &Path, max_doc_bytes: usize) -> Result<ReadOutcome> {
             });
             chunk_start_line = current_line;
         }
-
-        current_chunk.push_str(&line);
+        current_chunk.push_str(line);
     }
 
     if !current_chunk.is_empty() {
@@ -156,8 +179,7 @@ fn read_text_chunks(path: &Path, max_doc_bytes: usize) -> Result<ReadOutcome> {
         });
     }
 
-    let hash = hasher.finalize().to_hex().to_string();
-    Ok(ReadOutcome::Text { chunks, hash })
+    chunks
 }
 
 fn extract_symbols_from_chunks(chunks: &[TextChunk], lang: &str) -> String {
