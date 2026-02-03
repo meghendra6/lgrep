@@ -317,8 +317,20 @@ impl Config {
     /// 1. .cgreprc.toml in current directory
     /// 2. ~/.config/cgrep/config.toml
     pub fn load() -> Self {
-        // Try current directory first
-        if let Some(config) = Self::load_from_path(&PathBuf::from(".cgreprc.toml")) {
+        Self::load_for_dir(PathBuf::from("."))
+    }
+
+    /// Load configuration relative to a given directory.
+    ///
+    /// Precedence (highest to lowest):
+    /// 1. <dir>/.cgreprc.toml
+    /// 2. ~/.config/cgrep/config.toml
+    pub fn load_for_dir(dir: impl AsRef<std::path::Path>) -> Self {
+        let dir = dir.as_ref();
+
+        // Try project-local config first
+        let local_path = dir.join(".cgreprc.toml");
+        if let Some(config) = Self::load_from_path(&local_path) {
             return config;
         }
 
@@ -333,7 +345,7 @@ impl Config {
         Self::default()
     }
 
-    fn load_from_path(path: &PathBuf) -> Option<Self> {
+    fn load_from_path(path: &std::path::Path) -> Option<Self> {
         let content = std::fs::read_to_string(path).ok()?;
         match toml::from_str(&content) {
             Ok(config) => Some(config),
@@ -346,18 +358,18 @@ impl Config {
 
     /// Get output format from config, parsing the string to ConfigOutputFormat
     pub fn output_format(&self) -> Option<ConfigOutputFormat> {
-        self.default_format.as_ref().and_then(|s| match s.to_lowercase().as_str() {
-            "json" => Some(ConfigOutputFormat::Json),
-            "text" => Some(ConfigOutputFormat::Text),
-            _ => None,
-        })
+        self.default_format
+            .as_ref()
+            .and_then(|s| match s.to_lowercase().as_str() {
+                "json" => Some(ConfigOutputFormat::Json),
+                "text" => Some(ConfigOutputFormat::Text),
+                _ => None,
+            })
     }
 
     /// Merge CLI options with config (CLI wins)
     pub fn merge_max_results(&self, cli_value: Option<usize>) -> usize {
-        cli_value
-            .or(self.max_results)
-            .unwrap_or(10)
+        cli_value.or(self.max_results).unwrap_or(10)
     }
 
     /// Get a profile by name, falling back to built-in presets
