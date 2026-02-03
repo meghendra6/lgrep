@@ -20,13 +20,20 @@ use tantivy::{
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
 use cgrep::cache::{CacheKey, SearchCache};
-use cgrep::config::Config;
-use cgrep::embedding::provider::EmbeddingProvider;
+use cgrep::config::{Config, EmbeddingProviderType};
+use cgrep::embedding::provider::create_provider;
 use cgrep::embedding::storage::EmbeddingStorage;
+use cgrep::embedding::EmbeddingProviderConfig;
 use cgrep::errors::IndexNotFoundError;
-use cgrep::filters::{matches_file_type, CompiledGlob, matches_glob_compiled, should_exclude_compiled};
-use cgrep::hybrid::{BM25Result, HybridConfig, HybridResult, HybridSearcher, SearchMode as HybridSearchMode};
-use cgrep::output::{use_colors, colorize_path, colorize_line_num, colorize_match, colorize_context};
+use cgrep::filters::{
+    matches_file_type, matches_glob_compiled, should_exclude_compiled, CompiledGlob,
+};
+use cgrep::hybrid::{
+    BM25Result, HybridConfig, HybridResult, HybridSearcher, SearchMode as HybridSearchMode,
+};
+use cgrep::output::{
+    colorize_context, colorize_line_num, colorize_match, colorize_path, use_colors,
+};
 use cgrep::utils::INDEX_DIR;
 const DEFAULT_CACHE_TTL_MS: u64 = 600_000; // 10 minutes
 
@@ -94,20 +101,11 @@ pub fn run(
 ) -> Result<()> {
     let start_time = Instant::now();
     let use_color = use_colors() && format == OutputFormat::Text;
-    
+
     // Precompile glob patterns for efficient repeated matching
     let compiled_glob = glob_pattern.and_then(CompiledGlob::new);
     let compiled_exclude = exclude_pattern.and_then(CompiledGlob::new);
-    
-    // Load config for defaults
-    let config = Config::load();
-    let effective_max_results = config.merge_max_results(Some(max_results));
-    let config_exclude_patterns: Vec<CompiledGlob> = config
-        .exclude_patterns
-        .iter()
-        .filter_map(|p| CompiledGlob::new(p.as_str()))
-        .collect();
-    
+
     let requested_root = path
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -115,9 +113,26 @@ pub fn run(
 
     // Find index root (may be in parent directory)
     let (root, index_path, using_parent) = match cgrep::utils::find_index_root(&requested_root) {
-        Some(index_root) => (index_root.root.clone(), index_root.index_path, index_root.is_parent),
-        None => (requested_root.clone(), requested_root.join(INDEX_DIR), false),
+        Some(index_root) => (
+            index_root.root.clone(),
+            index_root.index_path,
+            index_root.is_parent,
+        ),
+        None => (
+            requested_root.clone(),
+            requested_root.join(INDEX_DIR),
+            false,
+        ),
     };
+
+    // Load config relative to the index root so running from subdirectories works.
+    let config = Config::load_for_dir(&root);
+    let effective_max_results = config.merge_max_results(Some(max_results));
+    let config_exclude_patterns: Vec<CompiledGlob> = config
+        .exclude_patterns
+        .iter()
+        .filter_map(|p| CompiledGlob::new(p.as_str()))
+        .collect();
 
     if using_parent {
         eprintln!("Using index from: {}", root.display());
@@ -146,13 +161,14 @@ pub fn run(
 
     // Check for hybrid search mode
     let effective_search_mode = search_mode.unwrap_or(HybridSearchMode::Keyword);
-    
+
     let outcome = match effective_search_mode {
         HybridSearchMode::Semantic | HybridSearchMode::Hybrid => {
             // Use hybrid search
             hybrid_search(
                 query,
                 &root,
+                &config,
                 effective_max_results,
                 context,
                 file_type,
@@ -241,7 +257,11 @@ pub fn run(
 
                 let format_line_prefix = |marker: &str, line_num: usize, width: usize| {
                     let padded = format!("{:>width$}", line_num, width = width);
-                    let num = if use_color { padded.yellow().to_string() } else { padded };
+                    let num = if use_color {
+                        padded.yellow().to_string()
+                    } else {
+                        padded
+                    };
                     let marker = if use_color && marker == ">" {
                         marker.blue().to_string()
                     } else {
@@ -252,15 +272,24 @@ pub fn run(
 
                 let mut prev_had_context = false;
                 for (idx, result) in outcome.results.iter().enumerate() {
-                    let has_context = !result.context_before.is_empty() || !result.context_after.is_empty();
+                    let has_context =
+                        !result.context_before.is_empty() || !result.context_after.is_empty();
 
                     // Print separator between context groups
                     if idx > 0 && (prev_had_context || has_context) {
-                        println!("{}", if use_color { "--".dimmed().to_string() } else { "--".to_string() });
+                        println!(
+                            "{}",
+                            if use_color {
+                                "--".dimmed().to_string()
+                            } else {
+                                "--".to_string()
+                            }
+                        );
                     }
 
                     // Print match header
-                    let line_info = result.line
+                    let line_info = result
+                        .line
                         .map(|l| format!(":{}", colorize_line_num(l, use_color)))
                         .unwrap_or_default();
 
@@ -289,17 +318,11 @@ pub fn run(
                             IndexMode::Index => {
                                 println!(
                                     "{}{}  (score: {:.2})",
-                                    result.path,
-                                    line_info,
-                                    result.score
+                                    result.path, line_info, result.score
                                 );
                             }
                             IndexMode::Scan => {
-                                println!(
-                                    "{}{}  (match)",
-                                    result.path,
-                                    line_info
-                                );
+                                println!("{}{}  (match)", result.path, line_info);
                             }
                         }
                     }
@@ -312,7 +335,8 @@ pub fn run(
 
                             // Print context before
                             for (i, line) in result.context_before.iter().enumerate() {
-                                let ctx_line_num = match_line.saturating_sub(result.context_before.len() - i);
+                                let ctx_line_num =
+                                    match_line.saturating_sub(result.context_before.len() - i);
                                 let prefix = format_line_prefix(" ", ctx_line_num, width);
                                 println!("{}{}", prefix, colorize_context(line, use_color));
                             }
@@ -363,29 +387,33 @@ pub fn run(
 }
 
 /// Get context lines around a match
-fn get_context_lines(file_path: &std::path::Path, line_num: usize, context: usize) -> (Vec<String>, Vec<String>) {
+fn get_context_lines(
+    file_path: &std::path::Path,
+    line_num: usize,
+    context: usize,
+) -> (Vec<String>, Vec<String>) {
     let Ok(file) = fs::File::open(file_path) else {
         return (vec![], vec![]);
     };
-    
+
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-    
+
     let start = line_num.saturating_sub(context + 1);
     let end = (line_num + context).min(lines.len());
-    
+
     let before: Vec<String> = if line_num > 1 {
         lines[start..line_num.saturating_sub(1)].to_vec()
     } else {
         vec![]
     };
-    
+
     let after: Vec<String> = if line_num < lines.len() {
         lines[line_num..end].to_vec()
     } else {
         vec![]
     };
-    
+
     (before, after)
 }
 
@@ -413,9 +441,13 @@ fn index_search(
     let searcher = reader.searcher();
 
     let schema = index.schema();
-    let content_field = schema.get_field("content").context("Missing content field")?;
+    let content_field = schema
+        .get_field("content")
+        .context("Missing content field")?;
     let path_field = schema.get_field("path").context("Missing path field")?;
-    let symbols_field = schema.get_field("symbols").context("Missing symbols field")?;
+    let symbols_field = schema
+        .get_field("symbols")
+        .context("Missing symbols field")?;
     let line_offset_field = schema
         .get_field("line_number")
         .context("Missing line_number field")?;
@@ -541,7 +573,11 @@ fn scan_search(
         anyhow::bail!("Search query cannot be empty");
     }
 
-    let query_lower = if !case_sensitive { query.to_lowercase() } else { String::new() };
+    let query_lower = if !case_sensitive {
+        query.to_lowercase()
+    } else {
+        String::new()
+    };
     let scanner = FileScanner::new(root);
     let files = scanner.scan()?;
 
@@ -645,7 +681,8 @@ fn scan_search(
                     format!("{}...", &trimmed[..150])
                 };
 
-                let (context_before, context_after) = get_context_from_lines(&lines, idx + 1, context);
+                let (context_before, context_after) =
+                    get_context_from_lines(&lines, idx + 1, context);
 
                 results.push(SearchResult {
                     path: rel_path.clone(),
@@ -677,6 +714,7 @@ fn scan_search(
 fn hybrid_search(
     query: &str,
     root: &std::path::Path,
+    config: &Config,
     max_results: usize,
     context: usize,
     file_type: Option<&str>,
@@ -689,7 +727,7 @@ fn hybrid_search(
 ) -> Result<SearchOutcome> {
     let index_path = root.join(INDEX_DIR);
     let embedding_db_path = root.join(".cgrep").join("embeddings.sqlite");
-    
+
     // Build cache key
     let cache_key = CacheKey {
         query: query.to_string(),
@@ -703,77 +741,90 @@ fn hybrid_search(
         index_hash: None,
         embedding_model: None,
     };
-    
+
     // Try cache
     if use_cache {
         if let Ok(cache) = SearchCache::new(root, cache_ttl_ms) {
             if let Ok(Some(entry)) = cache.get::<Vec<HybridResult>>(&cache_key) {
                 // Return cached results
-                let results: Vec<SearchResult> = entry.data.iter().map(|hr| SearchResult {
-                    path: hr.path.clone(),
-                    score: hr.score,
-                    snippet: hr.snippet.clone(),
-                    line: hr.line,
-                    context_before: vec![],
-                    context_after: vec![],
-                    text_score: Some(hr.text_score),
-                    vector_score: Some(hr.vector_score),
-                    hybrid_score: Some(hr.score),
-                    result_id: hr.result_id.clone(),
-                    chunk_start: hr.chunk_start,
-                    chunk_end: hr.chunk_end,
-                }).collect();
-                
+                let results: Vec<SearchResult> = entry
+                    .data
+                    .iter()
+                    .map(|hr| SearchResult {
+                        path: hr.path.clone(),
+                        score: hr.score,
+                        snippet: hr.snippet.clone(),
+                        line: hr.line,
+                        context_before: vec![],
+                        context_after: vec![],
+                        text_score: Some(hr.text_score),
+                        vector_score: Some(hr.vector_score),
+                        hybrid_score: Some(hr.score),
+                        result_id: hr.result_id.clone(),
+                        chunk_start: hr.chunk_start,
+                        chunk_end: hr.chunk_end,
+                    })
+                    .collect();
+
                 return Ok(SearchOutcome {
                     results,
-                    files_with_matches: entry.data.iter().map(|r| r.path.clone()).collect::<HashSet<_>>().len(),
+                    files_with_matches: entry
+                        .data
+                        .iter()
+                        .map(|r| r.path.clone())
+                        .collect::<HashSet<_>>()
+                        .len(),
                     total_matches: entry.data.len(),
                     mode: IndexMode::Index,
                 });
             }
         }
     }
-    
+
     // Open embedding storage if available
     let embedding_storage = if embedding_db_path.exists() {
         EmbeddingStorage::open(&embedding_db_path).ok()
     } else {
         None
     };
-    
+
     // Get BM25 results first
     if !index_path.exists() {
-        return Err(anyhow::anyhow!("Index required for hybrid search. Run: cgrep index"));
+        return Err(anyhow::anyhow!(
+            "Index required for hybrid search. Run: cgrep index"
+        ));
     }
-    
+
     let bm25_outcome = index_search(
         query,
         root,
         max_results * 3, // Get more for reranking
-        0, // No context yet
+        0,               // No context yet
         file_type,
         compiled_glob,
         compiled_exclude,
         config_exclude_patterns,
         false,
     )?;
-    
+
     // Convert to BM25Result format
-    let bm25_results: Vec<BM25Result> = bm25_outcome.results.iter().map(|r| {
-        BM25Result {
+    let bm25_results: Vec<BM25Result> = bm25_outcome
+        .results
+        .iter()
+        .map(|r| BM25Result {
             path: r.path.clone(),
             score: r.score,
             snippet: r.snippet.clone(),
             line: r.line,
             chunk_start: r.line.map(|l| l as u32),
             chunk_end: r.line.map(|l| l as u32),
-        }
-    }).collect();
-    
+        })
+        .collect();
+
     // Create hybrid searcher
-    let config = HybridConfig::default().with_max_results(max_results);
-    let hybrid_searcher = HybridSearcher::new(config);
-    
+    let hybrid_config = HybridConfig::default().with_max_results(max_results);
+    let hybrid_searcher = HybridSearcher::new(hybrid_config);
+
     // Helper to make result ID
     let make_id = |path: &str, line: Option<usize>| -> String {
         let input = match line {
@@ -783,21 +834,54 @@ fn hybrid_search(
         let hash = blake3::hash(input.as_bytes());
         hash.to_hex()[..16].to_string()
     };
-    
+
     // Perform hybrid search based on mode
     let hybrid_results: Vec<HybridResult> = match mode {
         HybridSearchMode::Semantic | HybridSearchMode::Hybrid => {
             if let Some(ref storage) = embedding_storage {
-                // Generate query embedding using DummyProvider (placeholder)
-                let provider = cgrep::embedding::provider::DummyProvider::new(384);
-                match provider.embed_one(query) {
-                    Ok(query_embedding) => {
-                        hybrid_searcher.rerank_with_embeddings(bm25_results, &query_embedding, storage)
-                            .unwrap_or_default()
+                let provider_type = config.embeddings.provider();
+                let provider_config = match provider_type {
+                    EmbeddingProviderType::Command => Some(EmbeddingProviderConfig {
+                        provider: "command".to_string(),
+                        model: config.embeddings.model().to_string(),
+                        command: Some(config.embeddings.command().to_string()),
+                        normalize: true,
+                    }),
+                    EmbeddingProviderType::Dummy => Some(EmbeddingProviderConfig {
+                        provider: "dummy".to_string(),
+                        model: "dummy".to_string(),
+                        command: None,
+                        normalize: true,
+                    }),
+                    EmbeddingProviderType::Builtin => None,
+                };
+
+                let query_embedding = match provider_config {
+                    Some(ref provider_config) => match create_provider(provider_config)
+                        .and_then(|p| p.embed_one(query))
+                    {
+                        Ok(query_embedding) => Some(query_embedding),
+                        Err(err) => {
+                            eprintln!("Warning: embedding query failed (using BM25 only): {}", err);
+                            None
+                        }
+                    },
+                    None => {
+                        eprintln!(
+                            "Warning: embedding provider type 'builtin' is not implemented yet. Using BM25 only."
+                        );
+                        None
                     }
-                    Err(_) => {
-                        // Fallback to BM25-only if embedding fails
-                        bm25_results.iter().map(|r| HybridResult {
+                };
+
+                if let Some(query_embedding) = query_embedding {
+                    hybrid_searcher
+                        .rerank_with_embeddings(bm25_results, &query_embedding, storage)
+                        .unwrap_or_default()
+                } else {
+                    bm25_results
+                        .iter()
+                        .map(|r| HybridResult {
                             path: r.path.clone(),
                             score: r.score,
                             text_score: r.score,
@@ -809,12 +893,34 @@ fn hybrid_search(
                             chunk_start: r.chunk_start,
                             chunk_end: r.chunk_end,
                             result_id: Some(make_id(&r.path, r.line)),
-                        }).collect()
-                    }
+                        })
+                        .collect()
                 }
             } else {
                 eprintln!("Warning: No embedding storage found. Using BM25 only.");
-                bm25_results.iter().map(|r| HybridResult {
+                bm25_results
+                    .iter()
+                    .map(|r| HybridResult {
+                        path: r.path.clone(),
+                        score: r.score,
+                        text_score: r.score,
+                        vector_score: 0.0,
+                        text_norm: r.score,
+                        vector_norm: 0.0,
+                        snippet: r.snippet.clone(),
+                        line: r.line,
+                        chunk_start: r.chunk_start,
+                        chunk_end: r.chunk_end,
+                        result_id: Some(make_id(&r.path, r.line)),
+                    })
+                    .collect()
+            }
+        }
+        HybridSearchMode::Keyword => {
+            // Should not reach here
+            bm25_results
+                .iter()
+                .map(|r| HybridResult {
                     path: r.path.clone(),
                     score: r.score,
                     text_score: r.score,
@@ -826,31 +932,15 @@ fn hybrid_search(
                     chunk_start: r.chunk_start,
                     chunk_end: r.chunk_end,
                     result_id: Some(make_id(&r.path, r.line)),
-                }).collect()
-            }
-        }
-        HybridSearchMode::Keyword => {
-            // Should not reach here
-            bm25_results.iter().map(|r| HybridResult {
-                path: r.path.clone(),
-                score: r.score,
-                text_score: r.score,
-                vector_score: 0.0,
-                text_norm: r.score,
-                vector_norm: 0.0,
-                snippet: r.snippet.clone(),
-                line: r.line,
-                chunk_start: r.chunk_start,
-                chunk_end: r.chunk_end,
-                result_id: Some(make_id(&r.path, r.line)),
-            }).collect()
+                })
+                .collect()
         }
     };
-    
+
     // Convert to SearchResult with context
     let mut results: Vec<SearchResult> = Vec::with_capacity(max_results.min(hybrid_results.len()));
     let mut files_with_matches: HashSet<String> = HashSet::new();
-    
+
     for hr in hybrid_results.iter().take(max_results) {
         // Apply filters
         if !matches_file_type(&hr.path, file_type) {
@@ -862,19 +952,22 @@ fn hybrid_search(
         if should_exclude_compiled(&hr.path, compiled_exclude) {
             continue;
         }
-        if config_exclude_patterns.iter().any(|p| should_exclude_compiled(&hr.path, Some(p))) {
+        if config_exclude_patterns
+            .iter()
+            .any(|p| should_exclude_compiled(&hr.path, Some(p)))
+        {
             continue;
         }
-        
+
         files_with_matches.insert(hr.path.clone());
-        
+
         // Get context lines if needed
         let (context_before, context_after) = if context > 0 && hr.line.is_some() {
             get_context_lines(&root.join(&hr.path), hr.line.unwrap(), context)
         } else {
             (vec![], vec![])
         };
-        
+
         results.push(SearchResult {
             path: hr.path.clone(),
             score: hr.score,
@@ -890,18 +983,19 @@ fn hybrid_search(
             chunk_end: hr.chunk_end,
         });
     }
-    
+
     // Store in cache
     if use_cache {
         if let Ok(cache) = SearchCache::new(root, cache_ttl_ms) {
-            let to_cache: Vec<HybridResult> = hybrid_results.into_iter().take(max_results).collect();
+            let to_cache: Vec<HybridResult> =
+                hybrid_results.into_iter().take(max_results).collect();
             let _ = cache.put(&cache_key, to_cache);
         }
     }
-    
+
     let total_matches = results.len();
     let files_count = files_with_matches.len();
-    
+
     Ok(SearchOutcome {
         results,
         files_with_matches: files_count,
@@ -910,7 +1004,11 @@ fn hybrid_search(
     })
 }
 
-fn get_context_from_lines(lines: &[&str], line_num: usize, context: usize) -> (Vec<String>, Vec<String>) {
+fn get_context_from_lines(
+    lines: &[&str],
+    line_num: usize,
+    context: usize,
+) -> (Vec<String>, Vec<String>) {
     if lines.is_empty() {
         return (vec![], vec![]);
     }
@@ -920,7 +1018,10 @@ fn get_context_from_lines(lines: &[&str], line_num: usize, context: usize) -> (V
 
     let before = lines[start..idx].iter().map(|l| (*l).to_string()).collect();
     let after = if idx + 1 < end {
-        lines[idx + 1..end].iter().map(|l| (*l).to_string()).collect()
+        lines[idx + 1..end]
+            .iter()
+            .map(|l| (*l).to_string())
+            .collect()
     } else {
         vec![]
     };
@@ -932,8 +1033,10 @@ fn highlight_matches_regex(text: &str, re: &Regex, use_color: bool) -> String {
     if !use_color {
         return text.to_string();
     }
-    re.replace_all(text, |caps: &regex::Captures| colorize_match(&caps[0], true))
-        .to_string()
+    re.replace_all(text, |caps: &regex::Captures| {
+        colorize_match(&caps[0], true)
+    })
+    .to_string()
 }
 
 /// Highlight query matches in text
@@ -941,22 +1044,24 @@ fn highlight_matches(text: &str, query: &str, use_color: bool) -> String {
     if !use_color {
         return text.to_string();
     }
-    
+
     let terms: Vec<&str> = query.split_whitespace().collect();
     let mut result = text.to_string();
-    
+
     for term in terms {
         let re = regex::RegexBuilder::new(&regex::escape(term))
             .case_insensitive(true)
             .build();
-        
+
         if let Ok(re) = re {
-            result = re.replace_all(&result, |caps: &regex::Captures| {
-                colorize_match(&caps[0], true)
-            }).to_string();
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    colorize_match(&caps[0], true)
+                })
+                .to_string();
         }
     }
-    
+
     result
 }
 
@@ -991,7 +1096,7 @@ fn find_snippet_with_line(content: &str, query: &str, max_len: usize) -> (String
             }
         })
         .unwrap_or_default();
-    
+
     (snippet, None)
 }
 
