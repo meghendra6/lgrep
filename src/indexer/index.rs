@@ -210,10 +210,16 @@ pub struct IndexBuilder {
     root: std::path::PathBuf,
     schema: Schema,
     fields: IndexFields,
+    exclude_patterns: Vec<String>,
 }
 
 impl IndexBuilder {
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
+        Self::with_excludes(root, Vec::new())
+    }
+
+    /// Create index builder with exclude patterns
+    pub fn with_excludes(root: impl AsRef<Path>, excludes: Vec<String>) -> Result<Self> {
         let mut schema_builder = Schema::builder();
 
         let path = schema_builder.add_text_field("path", TEXT | STORED);
@@ -236,6 +242,7 @@ impl IndexBuilder {
             root: root.as_ref().to_path_buf(),
             schema,
             fields,
+            exclude_patterns: excludes,
         })
     }
 
@@ -273,7 +280,7 @@ impl IndexBuilder {
             .writer(50_000_000) // 50MB heap
             .context("Failed to create index writer")?;
 
-        let scanner = FileScanner::new(&self.root);
+        let scanner = FileScanner::with_excludes(&self.root, self.exclude_patterns.clone());
         let files = scanner.list_files()?;
         let total_files = files.len();
 
@@ -511,13 +518,13 @@ impl IndexBuilder {
 }
 
 /// Run the index command
-pub fn run(path: Option<&str>, force: bool) -> Result<()> {
+pub fn run(path: Option<&str>, force: bool, excludes: Vec<String>) -> Result<()> {
     let root = path
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .ok_or_else(|| anyhow::anyhow!("Cannot determine current directory"))?;
 
-    let builder = IndexBuilder::new(&root)?;
+    let builder = IndexBuilder::with_excludes(&root, excludes)?;
     let count = builder.build(force)?;
 
     println!("Index complete: {} files", count);

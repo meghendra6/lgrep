@@ -148,6 +148,28 @@ impl EmbeddingConfig {
     }
 }
 
+/// Indexing configuration
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct IndexConfig {
+    /// Paths/patterns to exclude from indexing
+    pub exclude_paths: Vec<String>,
+    /// Maximum file size in bytes to index (default: 1MB)
+    pub max_file_size: Option<u64>,
+}
+
+impl IndexConfig {
+    /// Get exclude paths
+    pub fn exclude_paths(&self) -> &[String] {
+        &self.exclude_paths
+    }
+
+    /// Get max file size (default: 1MB)
+    pub fn max_file_size(&self) -> u64 {
+        self.max_file_size.unwrap_or(1024 * 1024)
+    }
+}
+
 /// Cache configuration
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -279,6 +301,10 @@ pub struct Config {
     #[serde(default)]
     pub cache: CacheConfig,
 
+    /// Index configuration
+    #[serde(default)]
+    pub index: IndexConfig,
+
     /// Named profiles (e.g., "human", "agent", "fast")
     #[serde(default, rename = "profile")]
     pub profiles: HashMap<String, ProfileConfig>,
@@ -362,6 +388,11 @@ impl Config {
     /// Get the cache configuration
     pub fn cache(&self) -> &CacheConfig {
         &self.cache
+    }
+
+    /// Get the index configuration
+    pub fn index(&self) -> &IndexConfig {
+        &self.index
     }
 
     /// Check if embeddings should be enabled based on configuration and environment
