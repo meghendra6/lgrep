@@ -99,7 +99,7 @@ impl HybridConfig {
         if self.candidate_k > 0 {
             self.candidate_k
         } else {
-            (self.max_results * 20).min(500).max(50)
+            (self.max_results * 20).clamp(50, 500)
         }
     }
 }
@@ -220,19 +220,19 @@ impl HybridSearcher {
             let text_norm = text_norms[i];
 
             // Look up embedding for this result's line
-            let (vector_score, vector_norm, chunk_start, chunk_end) =
-                if let Some(line) = bm25.line {
-                    match storage.get_chunk_for_line(&bm25.path, line as u32) {
-                        Ok(Some(chunk)) => {
-                            let cos_sim = Self::cosine_similarity(query_embedding, &chunk.embedding);
-                            let norm = Self::normalize_vector_score(cos_sim);
-                            (cos_sim, norm, Some(chunk.start_line), Some(chunk.end_line))
-                        }
-                        _ => (0.0, 0.5, bm25.chunk_start, bm25.chunk_end),
+            let (vector_score, vector_norm, chunk_start, chunk_end) = if let Some(line) = bm25.line
+            {
+                match storage.get_chunk_for_line(&bm25.path, line as u32) {
+                    Ok(Some(chunk)) => {
+                        let cos_sim = Self::cosine_similarity(query_embedding, &chunk.embedding);
+                        let norm = Self::normalize_vector_score(cos_sim);
+                        (cos_sim, norm, Some(chunk.start_line), Some(chunk.end_line))
                     }
-                } else {
-                    (0.0, 0.5, bm25.chunk_start, bm25.chunk_end)
-                };
+                    _ => (0.0, 0.5, bm25.chunk_start, bm25.chunk_end),
+                }
+            } else {
+                (0.0, 0.5, bm25.chunk_start, bm25.chunk_end)
+            };
 
             let hybrid_score = self.combine_scores(text_norm, vector_norm);
 
@@ -284,7 +284,8 @@ impl HybridSearcher {
         query_embedding: &[f32],
         storage: &EmbeddingStorage,
     ) -> Result<Vec<HybridResult>> {
-        let similarity_results = storage.search_similar(query_embedding, self.config.max_results)?;
+        let similarity_results =
+            storage.search_similar(query_embedding, self.config.max_results)?;
 
         let results: Vec<HybridResult> = similarity_results
             .into_iter()
@@ -465,8 +466,14 @@ mod tests {
 
     #[test]
     fn test_search_mode_parsing() {
-        assert_eq!("keyword".parse::<SearchMode>().unwrap(), SearchMode::Keyword);
-        assert_eq!("semantic".parse::<SearchMode>().unwrap(), SearchMode::Semantic);
+        assert_eq!(
+            "keyword".parse::<SearchMode>().unwrap(),
+            SearchMode::Keyword
+        );
+        assert_eq!(
+            "semantic".parse::<SearchMode>().unwrap(),
+            SearchMode::Semantic
+        );
         assert_eq!("hybrid".parse::<SearchMode>().unwrap(), SearchMode::Hybrid);
         assert_eq!("h".parse::<SearchMode>().unwrap(), SearchMode::Hybrid);
         assert!("invalid".parse::<SearchMode>().is_err());

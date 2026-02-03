@@ -84,7 +84,10 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Generates an embedding for a single text.
     fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
         let result = self.embed(&[text.to_string()])?;
-        result.vectors.into_iter().next()
+        result
+            .vectors
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("No embedding returned"))
     }
 }
@@ -123,7 +126,9 @@ impl CommandProvider {
 
     /// Creates a command provider from configuration.
     pub fn from_config(config: &EmbeddingProviderConfig) -> Result<Self> {
-        let command = config.command.as_ref()
+        let command = config
+            .command
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Command provider requires 'command' field"))?
             .clone();
         Ok(Self::new(command, config.model.clone(), config.normalize))
@@ -164,8 +169,8 @@ impl EmbeddingProvider for CommandProvider {
             normalize: self.normalize,
         };
 
-        let request_json = serde_json::to_string(&request)
-            .context("Failed to serialize embedding request")?;
+        let request_json =
+            serde_json::to_string(&request).context("Failed to serialize embedding request")?;
 
         // Parse command with arguments
         let parts: Vec<&str> = self.command.split_whitespace().collect();
@@ -187,13 +192,17 @@ impl EmbeddingProvider for CommandProvider {
 
         // Write request to stdin
         {
-            let stdin = child.stdin.as_mut()
+            let stdin = child
+                .stdin
+                .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-            stdin.write_all(request_json.as_bytes())
+            stdin
+                .write_all(request_json.as_bytes())
                 .context("Failed to write to stdin")?;
         }
 
-        let output = child.wait_with_output()
+        let output = child
+            .wait_with_output()
             .context("Failed to wait for command")?;
 
         if !output.status.success() {
@@ -201,8 +210,8 @@ impl EmbeddingProvider for CommandProvider {
             bail!("Embedding command failed: {}", stderr);
         }
 
-        let response: EmbeddingResponse = serde_json::from_slice(&output.stdout)
-            .with_context(|| {
+        let response: EmbeddingResponse =
+            serde_json::from_slice(&output.stdout).with_context(|| {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 format!("Failed to parse embedding response: {}", stdout)
             })?;
@@ -244,10 +253,7 @@ impl EmbeddingProvider for DummyProvider {
     }
 
     fn embed(&self, texts: &[String]) -> Result<EmbeddingResult> {
-        let vectors: Vec<Vec<f32>> = texts
-            .iter()
-            .map(|_| vec![0.0; self.dimension])
-            .collect();
+        let vectors: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.0; self.dimension]).collect();
 
         Ok(EmbeddingResult {
             model: self.model.clone(),
@@ -272,9 +278,7 @@ pub fn create_provider(config: &EmbeddingProviderConfig) -> Result<Box<dyn Embed
             }
             Ok(Box::new(provider))
         }
-        "dummy" => {
-            Ok(Box::new(DummyProvider::new(384)))
-        }
+        "dummy" => Ok(Box::new(DummyProvider::new(384))),
         other => {
             bail!("Unknown embedding provider type: {}", other);
         }
@@ -307,7 +311,7 @@ impl<P: EmbeddingProvider> BatchingProvider<P> {
         let mut dimension = 0;
 
         for batch in texts.chunks(self.batch_size) {
-            let result = self.inner.embed(&batch.to_vec())?;
+            let result = self.inner.embed(batch)?;
             dimension = result.dimension;
             all_vectors.extend(result.vectors);
         }
@@ -330,7 +334,9 @@ mod tests {
         assert_eq!(provider.model(), "dummy");
         assert_eq!(provider.dimension(), Some(384));
 
-        let result = provider.embed(&["hello".to_string(), "world".to_string()]).unwrap();
+        let result = provider
+            .embed(&["hello".to_string(), "world".to_string()])
+            .unwrap();
         assert_eq!(result.vectors.len(), 2);
         assert_eq!(result.vectors[0].len(), 384);
         assert!(result.vectors[0].iter().all(|&v| v == 0.0));
