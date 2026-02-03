@@ -20,6 +20,7 @@ pub struct FileScanner {
     root: PathBuf,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
+    respect_git_ignore: bool,
 }
 
 impl FileScanner {
@@ -34,6 +35,7 @@ impl FileScanner {
                 "md".into(), "txt".into(), "json".into(), "yaml".into(), "toml".into(),
             ],
             exclude_patterns: Vec::new(),
+            respect_git_ignore: true,
         }
     }
 
@@ -44,19 +46,42 @@ impl FileScanner {
         scanner
     }
 
+    /// Enable or disable respect for git ignore rules
+    pub fn with_gitignore(mut self, enabled: bool) -> Self {
+        self.respect_git_ignore = enabled;
+        self
+    }
+
+    fn make_builder(&self) -> WalkBuilder {
+        let mut builder = WalkBuilder::new(&self.root);
+        builder.hidden(false);
+
+        if self.respect_git_ignore {
+            builder
+                .git_ignore(true)
+                .git_exclude(true)
+                .git_global(true);
+        } else {
+            builder
+                .git_ignore(false)
+                .git_exclude(false)
+                .git_global(false);
+        }
+
+        builder
+    }
+
     /// Scan all files in the directory
     pub fn scan(&self) -> Result<Vec<ScannedFile>> {
         let (tx, rx) = mpsc::channel();
 
-        let walker = WalkBuilder::new(&self.root)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
+        let walker = self
+            .make_builder()
             .filter_entry(|entry| {
                 entry
                     .file_name()
                     .to_str()
-                    .map(|name| name != ".cgrep")
+                    .map(|name| name != ".cgrep" && name != ".git" && name != ".hg" && name != ".svn")
                     .unwrap_or(true)
             })
             .build_parallel();
@@ -111,15 +136,13 @@ impl FileScanner {
     pub fn list_files(&self) -> Result<Vec<PathBuf>> {
         let (tx, rx) = mpsc::channel();
 
-        let walker = WalkBuilder::new(&self.root)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
+        let walker = self
+            .make_builder()
             .filter_entry(|entry| {
                 entry
                     .file_name()
                     .to_str()
-                    .map(|name| name != ".cgrep")
+                    .map(|name| name != ".cgrep" && name != ".git" && name != ".hg" && name != ".svn")
                     .unwrap_or(true)
             })
             .build_parallel();

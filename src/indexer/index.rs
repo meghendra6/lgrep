@@ -280,7 +280,8 @@ impl IndexBuilder {
             .writer(50_000_000) // 50MB heap
             .context("Failed to create index writer")?;
 
-        let scanner = FileScanner::with_excludes(&self.root, self.exclude_patterns.clone());
+        let scanner = FileScanner::with_excludes(&self.root, self.exclude_patterns.clone())
+            .with_gitignore(false);
         let files = scanner.list_files()?;
         let total_files = files.len();
 
@@ -556,6 +557,20 @@ mod tests {
 
         let second = builder.build(false).expect("second build");
         assert_eq!(second, 0);
+    }
+
+    #[test]
+    fn index_includes_gitignored_paths() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), ".venv/\n").expect("write gitignore");
+        std::fs::create_dir_all(root.join(".venv/lib")).expect("create venv");
+        std::fs::write(root.join(".venv/lib/site.py"), "print('ok')").expect("write venv file");
+        std::fs::write(root.join("main.rs"), "fn main() {}").expect("write main");
+
+        let builder = IndexBuilder::new(root).expect("builder");
+        let indexed = builder.build(false).expect("build");
+        assert_eq!(indexed, 2);
     }
 
     #[test]
