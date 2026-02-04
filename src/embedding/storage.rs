@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
-/// Default embedding dimension (commonly used by models like text-embedding-ada-002)
-pub const DEFAULT_EMBEDDING_DIM: usize = 1536;
+/// Default embedding dimension for sentence-transformers/all-MiniLM-L6-v2.
+pub const DEFAULT_EMBEDDING_DIM: usize = 384;
 
 /// Represents a code chunk with its embedding vector.
 #[derive(Debug, Clone)]

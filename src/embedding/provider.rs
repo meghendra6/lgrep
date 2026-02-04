@@ -2,228 +2,149 @@
 
 //! Embedding provider interface and implementations.
 //!
-//! This module provides a trait for embedding generation and implements
-//! the command-based provider that calls an external embedding service.
+//! This module provides a fastembed-based provider optimized for CPU throughput.
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use std::borrow::Cow;
+use std::env;
 
-/// Default model ID when not specified.
-pub const DEFAULT_MODEL_ID: &str = "local-model";
+const DEFAULT_FASTEMBED_MODEL: &str = "minilm";
+const DEFAULT_FASTEMBED_BATCH_SIZE: usize = 512;
+const MAX_FASTEMBED_BATCH_SIZE: usize = 1024;
+const DEFAULT_FASTEMBED_MAX_CHARS: usize = 2000;
 
 /// Configuration for the embedding provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct EmbeddingProviderConfig {
-    /// Provider type: "command" or "builtin"
-    pub provider: String,
-    /// Model identifier
-    pub model: String,
-    /// Command to execute (for command provider)
-    pub command: Option<String>,
-    /// Whether to normalize embeddings
-    #[serde(default = "default_true")]
+    pub model: EmbeddingModel,
+    pub batch_size: usize,
+    pub max_chars: usize,
     pub normalize: bool,
 }
 
-fn default_true() -> bool {
-    true
+impl EmbeddingProviderConfig {
+    pub fn from_env() -> Result<Self> {
+        let model = parse_model_env()?;
+        let mut batch_size = parse_usize_env("FASTEMBED_BATCH_SIZE", DEFAULT_FASTEMBED_BATCH_SIZE)?;
+        if batch_size == 0 {
+            batch_size = DEFAULT_FASTEMBED_BATCH_SIZE;
+        }
+        if batch_size > MAX_FASTEMBED_BATCH_SIZE {
+            eprintln!(
+                "Warning: FASTEMBED_BATCH_SIZE={} exceeds max {}; clamping.",
+                batch_size, MAX_FASTEMBED_BATCH_SIZE
+            );
+            batch_size = MAX_FASTEMBED_BATCH_SIZE;
+        }
+
+        let mut max_chars = parse_usize_env("FASTEMBED_MAX_CHARS", DEFAULT_FASTEMBED_MAX_CHARS)?;
+        if max_chars == 0 {
+            max_chars = DEFAULT_FASTEMBED_MAX_CHARS;
+        }
+
+        let normalize = parse_bool_env("FASTEMBED_NORMALIZE", true)?;
+
+        Ok(Self {
+            model,
+            batch_size,
+            max_chars,
+            normalize,
+        })
+    }
+
+    pub fn has_env_overrides() -> bool {
+        env::var_os("FASTEMBED_MODEL").is_some()
+            || env::var_os("FASTEMBED_BATCH_SIZE").is_some()
+            || env::var_os("FASTEMBED_MAX_CHARS").is_some()
+            || env::var_os("FASTEMBED_NORMALIZE").is_some()
+    }
 }
 
 impl Default for EmbeddingProviderConfig {
     fn default() -> Self {
         Self {
-            provider: "command".to_string(),
-            model: DEFAULT_MODEL_ID.to_string(),
-            command: None,
+            model: EmbeddingModel::AllMiniLML6V2,
+            batch_size: DEFAULT_FASTEMBED_BATCH_SIZE,
+            max_chars: DEFAULT_FASTEMBED_MAX_CHARS,
             normalize: true,
         }
     }
 }
 
-/// Request format for the command provider.
-#[derive(Debug, Serialize)]
-struct EmbeddingRequest {
-    model: String,
-    texts: Vec<String>,
-    normalize: bool,
-}
-
-/// Response format from the command provider.
-#[derive(Debug, Deserialize)]
-struct EmbeddingResponse {
-    #[allow(dead_code)]
-    model: String,
-    dimension: usize,
-    vectors: Vec<Vec<f32>>,
-}
-
-/// Result of embedding generation.
-#[derive(Debug, Clone)]
-pub struct EmbeddingResult {
-    /// Model identifier used
-    pub model: String,
-    /// Embedding dimension
-    pub dimension: usize,
-    /// Generated embedding vectors (one per input text)
-    pub vectors: Vec<Vec<f32>>,
-}
-
 /// Trait for embedding providers.
-pub trait EmbeddingProvider: Send + Sync {
+pub trait EmbeddingProvider: Send {
     /// Returns the model identifier.
-    fn model(&self) -> &str;
+    fn model_id(&self) -> &str;
 
-    /// Returns the embedding dimension.
-    fn dimension(&self) -> Option<usize>;
+    /// Returns the batch size used by the provider.
+    fn batch_size(&self) -> usize;
 
     /// Generates embeddings for the given texts.
-    fn embed(&self, texts: &[String]) -> Result<EmbeddingResult>;
+    fn embed_texts(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 
     /// Generates an embedding for a single text.
-    fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
-        let result = self.embed(&[text.to_string()])?;
+    fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
+        let mut result = self.embed_texts(&[text.to_string()])?;
         result
-            .vectors
-            .into_iter()
-            .next()
+            .pop()
             .ok_or_else(|| anyhow::anyhow!("No embedding returned"))
     }
 }
 
-/// Command-based embedding provider.
-///
-/// Calls an external command to generate embeddings.
-/// The command receives JSON input on stdin and outputs JSON on stdout.
-///
-/// Input format:
-/// ```json
-/// {"model": "<id>", "texts": ["...", "..."], "normalize": true}
-/// ```
-///
-/// Output format:
-/// ```json
-/// {"model": "<id>", "dimension": <n>, "vectors": [[f32...], [f32...]]}
-/// ```
-pub struct CommandProvider {
-    command: String,
-    model: String,
-    normalize: bool,
-    cached_dimension: std::sync::Mutex<Option<usize>>,
+/// FastEmbed provider using sentence-transformers/all-MiniLM-L6-v2.
+pub struct FastEmbedder {
+    embedder: TextEmbedding,
+    config: EmbeddingProviderConfig,
+    model_id: String,
 }
 
-impl CommandProvider {
-    /// Creates a new command provider.
-    pub fn new(command: String, model: String, normalize: bool) -> Self {
-        Self {
-            command,
-            model,
-            normalize,
-            cached_dimension: std::sync::Mutex::new(None),
-        }
-    }
+impl FastEmbedder {
+    pub fn new(config: EmbeddingProviderConfig) -> Result<Self> {
+        let model = config.model.clone();
+        let model_id = model.to_string();
+        let init = InitOptions::new(model);
+        let embedder =
+            TextEmbedding::try_new(init).context("Failed to initialize fastembed model")?;
 
-    /// Creates a command provider from configuration.
-    pub fn from_config(config: &EmbeddingProviderConfig) -> Result<Self> {
-        let command = config
-            .command
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Command provider requires 'command' field"))?
-            .clone();
-        Ok(Self::new(command, config.model.clone(), config.normalize))
-    }
-
-    /// Checks if the command is available.
-    pub fn is_available(&self) -> bool {
-        // Try to find the command in PATH
-        let parts: Vec<&str> = self.command.split_whitespace().collect();
-        if parts.is_empty() {
-            return false;
-        }
-        which::which(parts[0]).is_ok()
-    }
-}
-
-impl EmbeddingProvider for CommandProvider {
-    fn model(&self) -> &str {
-        &self.model
-    }
-
-    fn dimension(&self) -> Option<usize> {
-        *self.cached_dimension.lock().unwrap()
-    }
-
-    fn embed(&self, texts: &[String]) -> Result<EmbeddingResult> {
-        if texts.is_empty() {
-            return Ok(EmbeddingResult {
-                model: self.model.clone(),
-                dimension: 0,
-                vectors: Vec::new(),
-            });
-        }
-
-        let request = EmbeddingRequest {
-            model: self.model.clone(),
-            texts: texts.to_vec(),
-            normalize: self.normalize,
-        };
-
-        let request_json =
-            serde_json::to_string(&request).context("Failed to serialize embedding request")?;
-
-        // Parse command with arguments
-        let parts: Vec<&str> = self.command.split_whitespace().collect();
-        if parts.is_empty() {
-            bail!("Empty command");
-        }
-
-        let mut cmd = Command::new(parts[0]);
-        if parts.len() > 1 {
-            cmd.args(&parts[1..]);
-        }
-
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("Failed to spawn command: {}", self.command))?;
-
-        // Write request to stdin
-        {
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
-            stdin
-                .write_all(request_json.as_bytes())
-                .context("Failed to write to stdin")?;
-        }
-
-        let output = child
-            .wait_with_output()
-            .context("Failed to wait for command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Embedding command failed: {}", stderr);
-        }
-
-        let response: EmbeddingResponse =
-            serde_json::from_slice(&output.stdout).with_context(|| {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                format!("Failed to parse embedding response: {}", stdout)
-            })?;
-
-        // Cache the dimension
-        *self.cached_dimension.lock().unwrap() = Some(response.dimension);
-
-        Ok(EmbeddingResult {
-            model: self.model.clone(),
-            dimension: response.dimension,
-            vectors: response.vectors,
+        Ok(Self {
+            embedder,
+            config,
+            model_id,
         })
+    }
+
+    pub fn from_env() -> Result<Self> {
+        Self::new(EmbeddingProviderConfig::from_env()?)
+    }
+}
+
+impl EmbeddingProvider for FastEmbedder {
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    fn batch_size(&self) -> usize {
+        self.config.batch_size
+    }
+
+    fn embed_texts(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let prepared = truncate_texts(texts, self.config.max_chars);
+        let mut embeddings = self
+            .embedder
+            .embed(&prepared, Some(self.config.batch_size))?;
+
+        if self.config.normalize {
+            for embedding in embeddings.iter_mut() {
+                l2_normalize(embedding);
+            }
+        }
+
+        Ok(embeddings)
     }
 }
 
@@ -231,6 +152,7 @@ impl EmbeddingProvider for CommandProvider {
 pub struct DummyProvider {
     model: String,
     dimension: usize,
+    batch_size: usize,
 }
 
 impl DummyProvider {
@@ -239,88 +161,112 @@ impl DummyProvider {
         Self {
             model: "dummy".to_string(),
             dimension,
+            batch_size: DEFAULT_FASTEMBED_BATCH_SIZE,
         }
     }
 }
 
 impl EmbeddingProvider for DummyProvider {
-    fn model(&self) -> &str {
+    fn model_id(&self) -> &str {
         &self.model
     }
 
-    fn dimension(&self) -> Option<usize> {
-        Some(self.dimension)
+    fn batch_size(&self) -> usize {
+        self.batch_size
     }
 
-    fn embed(&self, texts: &[String]) -> Result<EmbeddingResult> {
+    fn embed_texts(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let vectors: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.0; self.dimension]).collect();
 
-        Ok(EmbeddingResult {
-            model: self.model.clone(),
-            dimension: self.dimension,
-            vectors,
-        })
+        Ok(vectors)
     }
 }
 
-/// Creates an embedding provider based on configuration.
-pub fn create_provider(config: &EmbeddingProviderConfig) -> Result<Box<dyn EmbeddingProvider>> {
-    match config.provider.as_str() {
-        "command" => {
-            let provider = CommandProvider::from_config(config)?;
-            if !provider.is_available() {
-                bail!(
-                    "Embedding command '{}' not found in PATH. \
-                    Semantic search requires an embedding provider. \
-                    See documentation for setup instructions.",
-                    config.command.as_deref().unwrap_or("(not set)")
-                );
+fn truncate_texts<'a>(texts: &'a [String], max_chars: usize) -> Vec<Cow<'a, str>> {
+    texts
+        .iter()
+        .map(|text| truncate_to_chars(text.as_str(), max_chars))
+        .collect()
+}
+
+fn truncate_to_chars<'a>(input: &'a str, max_chars: usize) -> Cow<'a, str> {
+    if max_chars == 0 {
+        return Cow::Borrowed("");
+    }
+
+    let mut count = 0;
+    for (idx, _) in input.char_indices() {
+        if count == max_chars {
+            return Cow::Owned(input[..idx].to_string());
+        }
+        count += 1;
+    }
+
+    Cow::Borrowed(input)
+}
+
+fn l2_normalize(vector: &mut [f32]) {
+    let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return;
+    }
+    for value in vector.iter_mut() {
+        *value /= norm;
+    }
+}
+
+fn parse_model_env() -> Result<EmbeddingModel> {
+    let raw = env::var("FASTEMBED_MODEL").unwrap_or_else(|_| DEFAULT_FASTEMBED_MODEL.to_string());
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(EmbeddingModel::AllMiniLML6V2);
+    }
+
+    match value.to_lowercase().as_str() {
+        "minilm"
+        | "all-minilm-l6-v2"
+        | "allminilm-l6-v2"
+        | "sentence-transformers/all-minilm-l6-v2" => Ok(EmbeddingModel::AllMiniLML6V2),
+        other => bail!(
+            "Unsupported FASTEMBED_MODEL '{}'. Supported value: {}",
+            other,
+            DEFAULT_FASTEMBED_MODEL
+        ),
+    }
+}
+
+fn parse_usize_env(name: &str, default: usize) -> Result<usize> {
+    match env::var(name) {
+        Ok(raw) => {
+            let value = raw.trim();
+            if value.is_empty() {
+                Ok(default)
+            } else {
+                value
+                    .parse::<usize>()
+                    .with_context(|| format!("Invalid {} value: {}", name, value))
             }
-            Ok(Box::new(provider))
         }
-        "dummy" => Ok(Box::new(DummyProvider::new(384))),
-        other => {
-            bail!("Unknown embedding provider type: {}", other);
-        }
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(err) => Err(err).with_context(|| format!("Failed to read {}", name)),
     }
 }
 
-/// Streaming embedding provider that processes texts in batches.
-pub struct BatchingProvider<P: EmbeddingProvider> {
-    inner: P,
-    batch_size: usize,
-}
-
-impl<P: EmbeddingProvider> BatchingProvider<P> {
-    /// Creates a new batching provider.
-    pub fn new(inner: P, batch_size: usize) -> Self {
-        Self { inner, batch_size }
-    }
-
-    /// Embeds texts in batches and returns all results.
-    pub fn embed_batched(&self, texts: &[String]) -> Result<EmbeddingResult> {
-        if texts.is_empty() {
-            return Ok(EmbeddingResult {
-                model: self.inner.model().to_string(),
-                dimension: self.inner.dimension().unwrap_or(0),
-                vectors: Vec::new(),
-            });
+fn parse_bool_env(name: &str, default: bool) -> Result<bool> {
+    match env::var(name) {
+        Ok(raw) => {
+            let value = raw.trim().to_lowercase();
+            if value.is_empty() {
+                return Ok(default);
+            }
+            match value.as_str() {
+                "1" | "true" | "yes" | "on" => Ok(true),
+                "0" | "false" | "no" | "off" => Ok(false),
+                other => bail!("Invalid {} value: {}", name, other),
+            }
         }
-
-        let mut all_vectors = Vec::with_capacity(texts.len());
-        let mut dimension = 0;
-
-        for batch in texts.chunks(self.batch_size) {
-            let result = self.inner.embed(batch)?;
-            dimension = result.dimension;
-            all_vectors.extend(result.vectors);
-        }
-
-        Ok(EmbeddingResult {
-            model: self.inner.model().to_string(),
-            dimension,
-            vectors: all_vectors,
-        })
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(err) => Err(err).with_context(|| format!("Failed to read {}", name)),
     }
 }
 
@@ -330,48 +276,35 @@ mod tests {
 
     #[test]
     fn test_dummy_provider() {
-        let provider = DummyProvider::new(384);
-        assert_eq!(provider.model(), "dummy");
-        assert_eq!(provider.dimension(), Some(384));
+        let mut provider = DummyProvider::new(384);
+        assert_eq!(provider.model_id(), "dummy");
 
         let result = provider
-            .embed(&["hello".to_string(), "world".to_string()])
+            .embed_texts(&["hello".to_string(), "world".to_string()])
             .unwrap();
-        assert_eq!(result.vectors.len(), 2);
-        assert_eq!(result.vectors[0].len(), 384);
-        assert!(result.vectors[0].iter().all(|&v| v == 0.0));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].len(), 384);
+        assert!(result[0].iter().all(|&v| v == 0.0));
     }
 
     #[test]
     fn test_empty_embed() {
-        let provider = DummyProvider::new(384);
-        let result = provider.embed(&[]).unwrap();
-        assert!(result.vectors.is_empty());
+        let mut provider = DummyProvider::new(384);
+        let result = provider.embed_texts(&[]).unwrap();
+        assert!(result.is_empty());
     }
 
     #[test]
     fn test_embed_one() {
-        let provider = DummyProvider::new(128);
+        let mut provider = DummyProvider::new(128);
         let vector = provider.embed_one("test").unwrap();
         assert_eq!(vector.len(), 128);
     }
 
     #[test]
-    fn test_batching_provider() {
-        let inner = DummyProvider::new(64);
-        let batching = BatchingProvider::new(inner, 2);
-
-        let texts: Vec<String> = (0..5).map(|i| format!("text {}", i)).collect();
-        let result = batching.embed_batched(&texts).unwrap();
-
-        assert_eq!(result.vectors.len(), 5);
-        assert_eq!(result.dimension, 64);
-    }
-
-    #[test]
-    fn test_default_config() {
-        let config = EmbeddingProviderConfig::default();
-        assert_eq!(config.provider, "command");
-        assert!(config.normalize);
+    fn test_truncate_to_chars() {
+        let input = "hello";
+        assert_eq!(truncate_to_chars(input, 2), Cow::Owned("he".to_string()));
+        assert_eq!(truncate_to_chars(input, 5), Cow::Borrowed(input));
     }
 }
