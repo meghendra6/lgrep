@@ -5,32 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-02-03
+## [Unreleased]
 
 ### Added
-- **Hybrid Search**: Combine BM25 keyword search with vector embeddings for semantic code search
-- **Embedding Storage**: SQLite-based persistent storage for embedding vectors with incremental updates
-- **Code Chunker**: Configurable chunking for code embedding (80 lines default, 20 lines overlap)
-- **Embedding Provider**: Trait-based interface with CommandProvider and DummyProvider implementations
-- **Agent Session Cache**: File-based cache with TTL support for repeated queries
-- **New CLI flags**:
-  - `--hybrid` - Use hybrid BM25 + vector search
-  - `--semantic` - Use semantic (vector) search only
-  - `--keyword` - Use keyword (BM25) search only
-  - `--agent-cache` - Enable result caching for agents
-  - `--cache-ttl <ms>` - Cache TTL in milliseconds
-  - `--format json2` - Structured JSON output for AI agents
-- Stable result IDs using BLAKE3 hashing for agent session continuity
-- Updated AI agent installation files with new features documentation
+- Symbol-level embeddings for semantic/hybrid search (AST-derived symbols).
+- Embedding generation during `cgrep index` with `--embeddings auto|precompute|off` and `--embeddings-force`.
+- Hybrid and semantic search modes with `--hybrid`, `--semantic`, and `--keyword`, plus `--format json2` for agent-friendly output.
+- Embedding provider configuration (builtin/command/dummy) with SQLite storage for vectors.
+- Agent session cache with `--agent-cache` and `--cache-ttl`.
+- Parent index lookup and index-time exclude paths.
 
 ### Changed
-- Search module refactored to support multiple search modes
-- Improved agent integration documentation in install commands
+- FastEmbed MiniLM batching/truncation for faster embedding generation.
+- Search results are scoped to the current directory by default.
+- Indexing performance and correctness improvements.
+- Faster definition/callers/references lookups.
+- Improved context output readability.
+- Indexing now includes gitignored paths.
+- Documentation updates for indexing, watch mode, and agent install instructions.
 
 ### Removed
 - `cg` shortcut binary. Use `cgrep search <query>` directly.
 
-## [1.1.0] - 2026-02-02
+## [1.1.0] - 2026-02-01
 
 ### Added
 - Scan mode fallback when index doesn't exist
