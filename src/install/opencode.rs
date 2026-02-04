@@ -87,8 +87,8 @@ fn get_config_path() -> Result<PathBuf> {
 pub fn install() -> Result<()> {
     let tool_path = get_tool_path()?;
 
-    let created = write_file_if_changed(&tool_path, TOOL_DEFINITION)
-        .context("Failed to write cgrep tool")?;
+    let created =
+        write_file_if_changed(&tool_path, TOOL_DEFINITION).context("Failed to write cgrep tool")?;
 
     if created {
         println!("Created cgrep tool at {:?}", tool_path);

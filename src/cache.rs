@@ -34,6 +34,8 @@ pub struct CacheKey {
     pub index_hash: Option<String>,
     /// Embedding model for cache invalidation
     pub embedding_model: Option<String>,
+    /// Search root for scoping results
+    pub search_root: Option<String>,
 }
 
 impl CacheKey {
@@ -109,9 +111,14 @@ impl SearchCache {
 
     /// Create a new cache manager
     pub fn new<P: AsRef<Path>>(repo_root: P, ttl_ms: u64) -> Result<Self> {
-        let cache_dir = repo_root.as_ref().join(".cgrep").join("cache").join("search");
-        fs::create_dir_all(&cache_dir)
-            .with_context(|| format!("Failed to create cache directory: {}", cache_dir.display()))?;
+        let cache_dir = repo_root
+            .as_ref()
+            .join(".cgrep")
+            .join("cache")
+            .join("search");
+        fs::create_dir_all(&cache_dir).with_context(|| {
+            format!("Failed to create cache directory: {}", cache_dir.display())
+        })?;
 
         Ok(Self { cache_dir, ttl_ms })
     }
@@ -165,8 +172,8 @@ impl SearchCache {
         let entry = CacheEntry::new(data, key);
         let path = self.cache_path(key);
 
-        let json = serde_json::to_string_pretty(&entry)
-            .context("Failed to serialize cache entry")?;
+        let json =
+            serde_json::to_string_pretty(&entry).context("Failed to serialize cache entry")?;
 
         fs::write(&path, json)
             .with_context(|| format!("Failed to write cache: {}", path.display()))?;
@@ -179,7 +186,12 @@ impl SearchCache {
         let mut count = 0;
         for entry in fs::read_dir(&self.cache_dir)? {
             let entry = entry?;
-            if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+            if entry
+                .path()
+                .extension()
+                .map(|e| e == "json")
+                .unwrap_or(false)
+            {
                 fs::remove_file(entry.path())?;
                 count += 1;
             }
@@ -275,6 +287,7 @@ mod tests {
             profile: None,
             index_hash: None,
             embedding_model: None,
+            search_root: None,
         }
     }
 

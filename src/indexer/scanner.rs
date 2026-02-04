@@ -28,11 +28,30 @@ impl FileScanner {
         Self {
             root: root.as_ref().to_path_buf(),
             extensions: vec![
-                "rs".into(), "ts".into(), "tsx".into(), "js".into(), "jsx".into(),
-                "py".into(), "go".into(), "java".into(), "c".into(), "cpp".into(),
-                "h".into(), "hpp".into(), "cs".into(), "rb".into(), "php".into(),
-                "swift".into(), "kt".into(), "scala".into(), "lua".into(),
-                "md".into(), "txt".into(), "json".into(), "yaml".into(), "toml".into(),
+                "rs".into(),
+                "ts".into(),
+                "tsx".into(),
+                "js".into(),
+                "jsx".into(),
+                "py".into(),
+                "go".into(),
+                "java".into(),
+                "c".into(),
+                "cpp".into(),
+                "h".into(),
+                "hpp".into(),
+                "cs".into(),
+                "rb".into(),
+                "php".into(),
+                "swift".into(),
+                "kt".into(),
+                "scala".into(),
+                "lua".into(),
+                "md".into(),
+                "txt".into(),
+                "json".into(),
+                "yaml".into(),
+                "toml".into(),
             ],
             exclude_patterns: Vec::new(),
             respect_git_ignore: true,
@@ -57,10 +76,7 @@ impl FileScanner {
         builder.hidden(false);
 
         if self.respect_git_ignore {
-            builder
-                .git_ignore(true)
-                .git_exclude(true)
-                .git_global(true);
+            builder.git_ignore(true).git_exclude(true).git_global(true);
         } else {
             builder
                 .git_ignore(false)
@@ -81,7 +97,9 @@ impl FileScanner {
                 entry
                     .file_name()
                     .to_str()
-                    .map(|name| name != ".cgrep" && name != ".git" && name != ".hg" && name != ".svn")
+                    .map(|name| {
+                        name != ".cgrep" && name != ".git" && name != ".hg" && name != ".svn"
+                    })
                     .unwrap_or(true)
             })
             .build_parallel();
@@ -142,7 +160,9 @@ impl FileScanner {
                 entry
                     .file_name()
                     .to_str()
-                    .map(|name| name != ".cgrep" && name != ".git" && name != ".hg" && name != ".svn")
+                    .map(|name| {
+                        name != ".cgrep" && name != ".git" && name != ".hg" && name != ".svn"
+                    })
                     .unwrap_or(true)
             })
             .build_parallel();

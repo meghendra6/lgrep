@@ -48,7 +48,11 @@ impl ChunkConfig {
     /// Creates a new ChunkConfig with the specified parameters.
     pub fn new(chunk_lines: usize, chunk_overlap: usize) -> Result<Self> {
         if chunk_overlap >= chunk_lines {
-            bail!("chunk_overlap ({}) must be less than chunk_lines ({})", chunk_overlap, chunk_lines);
+            bail!(
+                "chunk_overlap ({}) must be less than chunk_lines ({})",
+                chunk_overlap,
+                chunk_lines
+            );
         }
         if chunk_lines == 0 {
             bail!("chunk_lines must be greater than 0");
@@ -136,7 +140,11 @@ impl EmbeddingChunker {
             return Vec::new();
         }
 
-        let step = self.config.chunk_lines.saturating_sub(self.config.chunk_overlap).max(1);
+        let step = self
+            .config
+            .chunk_lines
+            .saturating_sub(self.config.chunk_overlap)
+            .max(1);
         let mut chunks = Vec::new();
         let mut start = 0_usize; // 0-indexed for slicing
 
@@ -208,9 +216,7 @@ mod tests {
 
     #[test]
     fn test_single_line() {
-        let chunker = EmbeddingChunker::new(
-            ChunkConfig::new(5, 2).unwrap().with_min_chunk_size(1)
-        );
+        let chunker = EmbeddingChunker::new(ChunkConfig::new(5, 2).unwrap().with_min_chunk_size(1));
         let chunks = chunker.chunk_text("hello world");
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].start_line, 1);
@@ -220,10 +226,11 @@ mod tests {
 
     #[test]
     fn test_multiple_chunks() {
-        let content = (1..=10).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let chunker = EmbeddingChunker::new(
-            ChunkConfig::new(4, 1).unwrap().with_min_chunk_size(1)
-        );
+        let content = (1..=10)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let chunker = EmbeddingChunker::new(ChunkConfig::new(4, 1).unwrap().with_min_chunk_size(1));
 
         let chunks = chunker.chunk_text(&content);
 
@@ -247,9 +254,8 @@ mod tests {
     #[test]
     fn test_small_chunk_filtering() {
         let content = "ab\ncd\nef";
-        let chunker = EmbeddingChunker::new(
-            ChunkConfig::new(2, 0).unwrap().with_min_chunk_size(10)
-        );
+        let chunker =
+            EmbeddingChunker::new(ChunkConfig::new(2, 0).unwrap().with_min_chunk_size(10));
 
         let chunks = chunker.chunk_text(content);
         // Each chunk would be 5 chars ("ab\ncd"), below min_chunk_size of 10
@@ -258,9 +264,7 @@ mod tests {
 
     #[test]
     fn test_large_file_detection() {
-        let chunker = EmbeddingChunker::new(
-            ChunkConfig::default().with_max_file_bytes(100)
-        );
+        let chunker = EmbeddingChunker::new(ChunkConfig::default().with_max_file_bytes(100));
 
         let small = "x".repeat(50);
         let large = "x".repeat(200);
@@ -272,9 +276,7 @@ mod tests {
     #[test]
     fn test_overlapping_content() {
         let content = "1\n2\n3\n4\n5\n6";
-        let chunker = EmbeddingChunker::new(
-            ChunkConfig::new(3, 1).unwrap().with_min_chunk_size(1)
-        );
+        let chunker = EmbeddingChunker::new(ChunkConfig::new(3, 1).unwrap().with_min_chunk_size(1));
 
         let chunks = chunker.chunk_text(content);
         // Chunks: [1-3] (lines 1,2,3), [3-5] (lines 3,4,5), [5-6] (lines 5,6)

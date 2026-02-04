@@ -44,7 +44,11 @@ pub fn read_scanned_files(paths: &[PathBuf]) -> Vec<ScannedFile> {
     scanned
 }
 
-fn find_files_with_field(root: &Path, field_name: &str, term: &str) -> Result<Option<Vec<PathBuf>>> {
+fn find_files_with_field(
+    root: &Path,
+    field_name: &str,
+    term: &str,
+) -> Result<Option<Vec<PathBuf>>> {
     let index_path = root.join(INDEX_DIR);
     if !index_path.exists() {
         return Ok(None);

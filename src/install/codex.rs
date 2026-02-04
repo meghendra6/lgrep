@@ -53,30 +53,30 @@ fn get_agents_md_path() -> Result<PathBuf> {
 
 pub fn install() -> Result<()> {
     let path = get_agents_md_path()?;
-    
-    let added = append_if_not_present(&path, SKILL_CONTENT)
-        .context("Failed to update AGENTS.md")?;
-    
+
+    let added =
+        append_if_not_present(&path, SKILL_CONTENT).context("Failed to update AGENTS.md")?;
+
     if added {
         print_install_success("Codex");
     } else {
         println!("cgrep is already installed in Codex");
     }
-    
+
     Ok(())
 }
 
 pub fn uninstall() -> Result<()> {
     let path = get_agents_md_path()?;
-    
+
     if !path.exists() {
         println!("Codex AGENTS.md not found");
         return Ok(());
     }
-    
+
     let content = std::fs::read_to_string(&path)?;
     let skill_trimmed = SKILL_CONTENT.trim();
-    
+
     if content.contains(skill_trimmed) {
         let updated = content.replace(skill_trimmed, "");
         let cleaned: String = updated
@@ -85,7 +85,7 @@ pub fn uninstall() -> Result<()> {
             .join("\n")
             .trim()
             .to_string();
-        
+
         if cleaned.is_empty() {
             std::fs::remove_file(&path)?;
         } else {
@@ -95,6 +95,6 @@ pub fn uninstall() -> Result<()> {
     } else {
         println!("cgrep is not installed in Codex");
     }
-    
+
     Ok(())
 }

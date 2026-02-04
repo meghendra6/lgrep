@@ -249,7 +249,7 @@ function greet(name: string): string {
 "#;
         let extractor = SymbolExtractor::new();
         let symbols = extractor.extract(source, "typescript").unwrap();
-        
+
         assert!(!symbols.is_empty());
         let func = symbols.iter().find(|s| s.name == "greet").unwrap();
         assert_eq!(func.kind, SymbolKind::Function);
@@ -268,7 +268,7 @@ class Person {
 "#;
         let extractor = SymbolExtractor::new();
         let symbols = extractor.extract(source, "typescript").unwrap();
-        
+
         let class = symbols.iter().find(|s| s.name == "Person").unwrap();
         assert_eq!(class.kind, SymbolKind::Class);
     }
@@ -286,9 +286,13 @@ pub fn add(a: i32, b: i32) -> i32 {
 "#;
         let extractor = SymbolExtractor::new();
         let symbols = extractor.extract(source, "rust").unwrap();
-        
-        assert!(symbols.iter().any(|s| s.name == "main" && s.kind == SymbolKind::Function));
-        assert!(symbols.iter().any(|s| s.name == "add" && s.kind == SymbolKind::Function));
+
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "main" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "add" && s.kind == SymbolKind::Function));
     }
 
     #[test]
@@ -303,7 +307,7 @@ class Calculator:
 "#;
         let extractor = SymbolExtractor::new();
         let symbols = extractor.extract(source, "python").unwrap();
-        
+
         let class = symbols.iter().find(|s| s.name == "Calculator").unwrap();
         assert_eq!(class.kind, SymbolKind::Class);
     }

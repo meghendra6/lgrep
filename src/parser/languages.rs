@@ -22,7 +22,10 @@ impl LanguageRegistry {
         let mut languages = HashMap::new();
 
         // Register supported languages
-        languages.insert("typescript".into(), tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into());
+        languages.insert(
+            "typescript".into(),
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        );
         languages.insert("tsx".into(), tree_sitter_typescript::LANGUAGE_TSX.into());
         languages.insert("javascript".into(), tree_sitter_javascript::LANGUAGE.into());
         languages.insert("python".into(), tree_sitter_python::LANGUAGE.into());

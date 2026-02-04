@@ -73,11 +73,7 @@ pub fn run(function: &str, format: OutputFormat) -> Result<()> {
         }
         OutputFormat::Text => {
             if results.is_empty() {
-                println!(
-                    "{} No callers found for: {}",
-                    "✗".red(),
-                    function.yellow()
-                );
+                println!("{} No callers found for: {}", "✗".red(), function.yellow());
             } else {
                 println!(
                     "\n{} Finding callers of: {}\n",
