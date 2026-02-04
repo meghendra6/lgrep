@@ -139,7 +139,7 @@ Index:
 -f, --force              Force full reindex
  -e, --exclude <pattern>  Exclude path/pattern (repeatable)
     --high-memory        Use a 1GiB writer budget for faster indexing
-    --embeddings <mode>  auto|precompute|off (default: auto)
+    --embeddings <mode>  auto|precompute|off (default: off)
     --embeddings-force   Force regenerate embeddings
 ```
 
@@ -176,6 +176,8 @@ The repository includes:
 
 ### Generating embeddings during indexing
 
+By default, `cgrep index` runs with embeddings disabled (`--embeddings off`).
+
 - `cgrep index --embeddings precompute`: generate embeddings for all indexed files (fails if the embedding provider is unavailable).
 - `cgrep index --embeddings auto`: best-effort (if the provider is unavailable, indexing continues without embeddings).
 - `cgrep index --embeddings off`: disable embedding generation.
@@ -189,14 +191,30 @@ Embeddings are generated using the provider configured in `.cgreprc.toml`:
 
 ```toml
 [embeddings]
-provider = "command"  # command|dummy
+provider = "builtin"  # builtin|command|dummy
+
+# command provider
 command = "embedder"
 model = "local-model-id"
+
+# symbol-level tuning (optional)
+max_symbols_per_file = 500
+symbol_preview_lines = 12
+symbol_max_chars = 1200
+# symbol_kinds = ["function", "class", "method"]
 ```
 
 `provider = "dummy"` is intended for tests/dev only (returns zero vectors).
 
 `chunk_lines` and `chunk_overlap` are deprecated and ignored (embeddings are symbol-level).
+
+For the builtin provider, you can tune FastEmbed via environment variables:
+```
+FASTEMBED_MODEL=minilm
+FASTEMBED_BATCH_SIZE=512
+FASTEMBED_MAX_CHARS=2000
+FASTEMBED_NORMALIZE=true
+```
 
 ### Using embeddings in search
 
@@ -233,10 +251,15 @@ exclude_patterns = ["target/**", "node_modules/**"]
 exclude_paths = ["vendor/", "dist/"]
 
 [embeddings]
-provider = "command"
-command = "embedder"
-model = "local-model-id"
+provider = "builtin"
+# provider = "command"
+# command = "embedder"
+# model = "local-model-id"
 max_file_bytes = 2000000
+max_symbols_per_file = 500
+symbol_preview_lines = 12
+symbol_max_chars = 1200
+# symbol_kinds = ["function", "class", "method"]
 ```
 Note: `max_results` is read but the CLI always supplies a default value, so the
 config value currently has no effect unless the CLI defaults change.
