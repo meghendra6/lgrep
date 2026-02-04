@@ -6,13 +6,17 @@
 
 use anyhow::{bail, Context, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use serde_json::Value;
 use std::borrow::Cow;
 use std::env;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 const DEFAULT_FASTEMBED_MODEL: &str = "minilm";
 const DEFAULT_FASTEMBED_BATCH_SIZE: usize = 512;
 const MAX_FASTEMBED_BATCH_SIZE: usize = 1024;
 const DEFAULT_FASTEMBED_MAX_CHARS: usize = 2000;
+const DEFAULT_COMMAND_BATCH_SIZE: usize = 64;
 
 /// Configuration for the embedding provider.
 #[derive(Debug, Clone)]
@@ -145,6 +149,116 @@ impl EmbeddingProvider for FastEmbedder {
         }
 
         Ok(embeddings)
+    }
+}
+
+/// Command provider that shells out to an external process.
+pub struct CommandProvider {
+    command: String,
+    model: String,
+    batch_size: usize,
+}
+
+impl CommandProvider {
+    pub fn new(command: String, model: String) -> Self {
+        Self {
+            command,
+            model,
+            batch_size: DEFAULT_COMMAND_BATCH_SIZE,
+        }
+    }
+
+    fn run_command(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let payload = serde_json::json!({
+            "model": self.model,
+            "texts": texts,
+        });
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&self.command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("Failed to spawn embedding command: {}", self.command))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let payload_str = payload.to_string();
+            stdin
+                .write_all(payload_str.as_bytes())
+                .context("Failed to write embeddings payload to stdin")?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .context("Failed to read embeddings command output")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "Embedding command failed (status {}): {}",
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed: Value = serde_json::from_str(stdout.trim())
+            .with_context(|| "Failed to parse embeddings command output as JSON")?;
+
+        let embeddings_value = match parsed {
+            Value::Array(arr) => Value::Array(arr),
+            Value::Object(ref obj) => {
+                if let Some(value) = obj.get("embeddings") {
+                    value.clone()
+                } else if let Some(value) = obj.get("vectors") {
+                    value.clone()
+                } else if let Some(value) = obj.get("data") {
+                    value.clone()
+                } else {
+                    bail!("Embeddings command output missing 'embeddings' field");
+                }
+            }
+            _ => bail!("Embeddings command output must be JSON array or object"),
+        };
+
+        let vectors = embeddings_value
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Embeddings output must be a JSON array"))?
+            .iter()
+            .map(|row| {
+                row.as_array()
+                    .ok_or_else(|| anyhow::anyhow!("Embedding row must be an array"))?
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_f64()
+                            .ok_or_else(|| anyhow::anyhow!("Embedding value must be a number"))
+                            .map(|v| v as f32)
+                    })
+                    .collect::<Result<Vec<f32>>>()
+            })
+            .collect::<Result<Vec<Vec<f32>>>>()?;
+
+        Ok(vectors)
+    }
+}
+
+impl EmbeddingProvider for CommandProvider {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
+    fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    fn embed_texts(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run_command(texts)
     }
 }
 
@@ -304,7 +418,10 @@ mod tests {
     #[test]
     fn test_truncate_to_chars() {
         let input = "hello";
-        assert_eq!(truncate_to_chars(input, 2), Cow::Owned("he".to_string()));
+        assert_eq!(
+            truncate_to_chars(input, 2),
+            Cow::<str>::Owned("he".to_string())
+        );
         assert_eq!(truncate_to_chars(input, 5), Cow::Borrowed(input));
     }
 }

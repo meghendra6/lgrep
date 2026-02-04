@@ -3,10 +3,12 @@
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
-use tempfile::TempDir;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use cgrep::embedding::EmbeddingStorage;
+use predicates::str::contains;
+use rusqlite::Connection;
+use tempfile::TempDir;
 
 fn write_file(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -28,8 +30,6 @@ fn write_dummy_embeddings_config(repo_root: &Path) {
         r#"
 [embeddings]
 provider = "dummy"
-chunk_lines = 2
-chunk_overlap = 0
 "#,
     )
     .unwrap();
@@ -50,24 +50,18 @@ fn index_precompute_creates_embeddings_db() {
     write_dummy_embeddings_config(dir.path());
 
     let file_path = dir.path().join("src").join("lib.rs");
-    write_file(
-        &file_path,
-        "aaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbb\ncccccccccccccccccccc\n",
-    );
+    write_file(&file_path, "fn alpha() {}\nfn beta() {}\n");
 
     run_index(dir.path(), &["--force", "--embeddings", "precompute"]);
 
     let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
     let file_path_str = file_path.to_string_lossy();
 
-    let info = storage
-        .get_file_info(file_path_str.as_ref())
-        .unwrap()
+    let symbols = storage
+        .get_symbols_for_path(file_path_str.as_ref())
         .unwrap();
-    assert!(info.chunk_count > 0);
-
-    let chunks = storage.get_chunks_for_path(file_path_str.as_ref()).unwrap();
-    assert!(!chunks.is_empty());
+    assert!(!symbols.is_empty());
+    assert!(symbols.iter().any(|s| s.symbol_name == "alpha"));
 }
 
 #[test]
@@ -76,27 +70,24 @@ fn index_precompute_skips_up_to_date_files() {
     write_dummy_embeddings_config(dir.path());
 
     let file_path = dir.path().join("src").join("lib.rs");
-    write_file(
-        &file_path,
-        "aaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbb\ncccccccccccccccccccc\n",
-    );
+    write_file(&file_path, "fn alpha() {}\nfn beta() {}\n");
 
     run_index(dir.path(), &["--force", "--embeddings", "precompute"]);
 
     let file_path_str = file_path.to_string_lossy().to_string();
-    let first_chunk_id = {
+    let first_created_at = {
         let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
-        storage.get_chunks_for_path(&file_path_str).unwrap()[0].id
+        storage.get_symbols_for_path(&file_path_str).unwrap()[0].created_at
     };
 
     run_index(dir.path(), &["--embeddings", "precompute"]);
 
-    let second_chunk_id = {
+    let second_created_at = {
         let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
-        storage.get_chunks_for_path(&file_path_str).unwrap()[0].id
+        storage.get_symbols_for_path(&file_path_str).unwrap()[0].created_at
     };
 
-    assert_eq!(second_chunk_id, first_chunk_id);
+    assert_eq!(second_created_at, first_created_at);
 }
 
 #[test]
@@ -105,17 +96,14 @@ fn index_embeddings_force_regenerates() {
     write_dummy_embeddings_config(dir.path());
 
     let file_path = dir.path().join("src").join("lib.rs");
-    write_file(
-        &file_path,
-        "aaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbb\ncccccccccccccccccccc\n",
-    );
+    write_file(&file_path, "fn alpha() {}\nfn beta() {}\n");
 
     run_index(dir.path(), &["--force", "--embeddings", "precompute"]);
 
     let file_path_str = file_path.to_string_lossy().to_string();
     let first_created_at = {
         let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
-        storage.get_chunks_for_path(&file_path_str).unwrap()[0].created_at
+        storage.get_symbols_for_path(&file_path_str).unwrap()[0].created_at
     };
 
     std::thread::sleep(Duration::from_millis(1100));
@@ -126,7 +114,7 @@ fn index_embeddings_force_regenerates() {
 
     let second_created_at = {
         let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
-        storage.get_chunks_for_path(&file_path_str).unwrap()[0].created_at
+        storage.get_symbols_for_path(&file_path_str).unwrap()[0].created_at
     };
 
     assert!(second_created_at > first_created_at);
@@ -139,14 +127,8 @@ fn index_removes_embeddings_for_deleted_files() {
 
     let a_path = dir.path().join("src").join("a.rs");
     let b_path = dir.path().join("src").join("b.rs");
-    write_file(
-        &a_path,
-        "aaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbb\ncccccccccccccccccccc\n",
-    );
-    write_file(
-        &b_path,
-        "dddddddddddddddddddd\neeeeeeeeeeeeeeeeeeee\nffffffffffffffffffff\n",
-    );
+    write_file(&a_path, "fn alpha() {}\n");
+    write_file(&b_path, "fn beta() {}\n");
 
     run_index(dir.path(), &["--force", "--embeddings", "precompute"]);
 
@@ -157,8 +139,8 @@ fn index_removes_embeddings_for_deleted_files() {
     let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
     let a_path_str = a_path.to_string_lossy().to_string();
     let b_path_str = b_path.to_string_lossy().to_string();
-    assert!(storage.get_file_info(&b_path_str).unwrap().is_none());
-    assert!(storage.get_file_info(&a_path_str).unwrap().is_some());
+    assert!(!storage.get_symbols_for_path(&a_path_str).unwrap().is_empty());
+    assert!(storage.get_symbols_for_path(&b_path_str).unwrap().is_empty());
 }
 
 #[test]
@@ -167,10 +149,7 @@ fn index_removes_embeddings_for_binary_files() {
     write_dummy_embeddings_config(dir.path());
 
     let file_path = dir.path().join("src").join("lib.rs");
-    write_file(
-        &file_path,
-        "aaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbb\ncccccccccccccccccccc\n",
-    );
+    write_file(&file_path, "fn alpha() {}\n");
 
     run_index(dir.path(), &["--force", "--embeddings", "precompute"]);
 
@@ -180,9 +159,64 @@ fn index_removes_embeddings_for_binary_files() {
 
     let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
     let file_path_str = file_path.to_string_lossy().to_string();
-    assert!(storage.get_file_info(&file_path_str).unwrap().is_none());
     assert!(storage
-        .get_chunks_for_path(&file_path_str)
+        .get_symbols_for_path(&file_path_str)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn index_precompute_errors_on_schema_mismatch() {
+    let dir = TempDir::new().unwrap();
+    write_dummy_embeddings_config(dir.path());
+
+    let file_path = dir.path().join("src").join("lib.rs");
+    write_file(&file_path, "fn alpha() {}\n");
+
+    // Create index first so .cgrep exists.
+    run_index(dir.path(), &["--force", "--embeddings", "off"]);
+
+    let db_path = dir.path().join(".cgrep").join("embeddings.sqlite");
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
+         INSERT INTO meta (key, value) VALUES ('unit', 'chunk');",
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("cgrep");
+    cmd.arg("index")
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--embeddings", "precompute"]);
+    cmd.assert()
+        .failure()
+        .stderr(contains("embeddings-force"));
+}
+
+#[test]
+fn index_auto_skips_on_schema_mismatch() {
+    let dir = TempDir::new().unwrap();
+    write_dummy_embeddings_config(dir.path());
+
+    let file_path = dir.path().join("src").join("lib.rs");
+    write_file(&file_path, "fn alpha() {}\n");
+
+    // Create index first so .cgrep exists.
+    run_index(dir.path(), &["--force", "--embeddings", "off"]);
+
+    let db_path = dir.path().join(".cgrep").join("embeddings.sqlite");
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
+         INSERT INTO meta (key, value) VALUES ('unit', 'chunk');",
+    )
+    .unwrap();
+
+    run_index(dir.path(), &["--embeddings", "auto"]);
+
+    let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
+    assert_eq!(storage.count_symbols().unwrap(), 0);
 }

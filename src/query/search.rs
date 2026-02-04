@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 use tantivy::{
     collector::TopDocs,
-    query::{BooleanQuery, FuzzyTermQuery, Occur, QueryParser},
+    query::{BooleanQuery, FuzzyTermQuery, Occur, QueryParser, TermQuery},
     schema::{Term, Value},
     Index, TantivyDocument,
 };
@@ -23,7 +23,7 @@ use crate::indexer::scanner::FileScanner;
 use cgrep::cache::{CacheKey, SearchCache};
 use cgrep::config::{Config, EmbeddingProviderType};
 use cgrep::embedding::{
-    storage::EmbeddingStorage, DummyProvider, EmbeddingProvider, EmbeddingProviderConfig,
+    CommandProvider, DummyProvider, EmbeddingProvider, EmbeddingProviderConfig, EmbeddingStorage,
     FastEmbedder, DEFAULT_EMBEDDING_DIM,
 };
 use cgrep::errors::IndexNotFoundError;
@@ -60,10 +60,10 @@ pub struct SearchResult {
     /// Unique result identifier
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_id: Option<String>,
-    /// Chunk start line (for semantic/hybrid)
+    /// Symbol start line (for semantic/hybrid)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_start: Option<u32>,
-    /// Chunk end line (for semantic/hybrid)
+    /// Symbol end line (for semantic/hybrid)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_end: Option<u32>,
 }
@@ -421,6 +421,9 @@ struct IndexCandidate {
     score: f32,
     snippet: String,
     line: Option<usize>,
+    symbol_id: Option<String>,
+    symbol_start: Option<u32>,
+    symbol_end: Option<u32>,
 }
 
 fn collect_index_candidates(
@@ -428,6 +431,7 @@ fn collect_index_candidates(
     index_root: &Path,
     search_root: &Path,
     max_candidates: usize,
+    doc_type: &str,
     file_type: Option<&str>,
     compiled_glob: Option<&CompiledGlob>,
     compiled_exclude: Option<&CompiledGlob>,
@@ -454,11 +458,20 @@ fn collect_index_candidates(
     let symbols_field = schema
         .get_field("symbols")
         .context("Missing symbols field")?;
+    let doc_type_field = schema
+        .get_field("doc_type")
+        .context("Missing doc_type field")?;
+    let symbol_id_field = schema
+        .get_field("symbol_id")
+        .context("Missing symbol_id field")?;
+    let symbol_end_line_field = schema
+        .get_field("symbol_end_line")
+        .context("Missing symbol_end_line field")?;
     let line_offset_field = schema
         .get_field("line_number")
         .context("Missing line_number field")?;
 
-    let parsed_query: Box<dyn tantivy::query::Query> = if fuzzy {
+    let text_query: Box<dyn tantivy::query::Query> = if fuzzy {
         let terms: Vec<&str> = query.split_whitespace().collect();
         if terms.is_empty() {
             anyhow::bail!("Fuzzy search requires at least one search term");
@@ -482,6 +495,13 @@ fn collect_index_candidates(
         let query_parser = QueryParser::for_index(&index, vec![content_field, symbols_field]);
         Box::new(query_parser.parse_query(query)?)
     };
+
+    let doc_type_term = Term::from_field_text(doc_type_field, doc_type);
+    let doc_type_query = TermQuery::new(doc_type_term, tantivy::schema::IndexRecordOption::Basic);
+    let parsed_query: Box<dyn tantivy::query::Query> = Box::new(BooleanQuery::new(vec![
+        (Occur::Must, text_query),
+        (Occur::Must, Box::new(doc_type_query)),
+    ]));
 
     let fetch_limit = max_candidates.saturating_mul(5).max(1);
     let top_docs = searcher.search(&parsed_query, &TopDocs::with_limit(fetch_limit))?;
@@ -531,7 +551,30 @@ fn collect_index_candidates(
             .unwrap_or(1) as usize;
 
         let (snippet, line_num) = find_snippet_with_line(content_value, query, 150);
-        let line_num = line_num.map(|l| l + line_offset.saturating_sub(1));
+        let doc_type_value = doc
+            .get_first(doc_type_field)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mut line_num = line_num.map(|l| l + line_offset.saturating_sub(1));
+        if line_num.is_none() && doc_type_value == "symbol" {
+            line_num = Some(line_offset);
+        }
+
+        let symbol_id = if doc_type_value == "symbol" {
+            doc.get_first(symbol_id_field)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        let symbol_end = if doc_type_value == "symbol" {
+            doc.get_first(symbol_end_line_field)
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+        } else {
+            None
+        };
 
         candidates.push(IndexCandidate {
             stored_path: path_value.to_string(),
@@ -540,6 +583,13 @@ fn collect_index_candidates(
             score: *score,
             snippet,
             line: line_num,
+            symbol_id,
+            symbol_start: if doc_type_value == "symbol" {
+                Some(line_offset as u32)
+            } else {
+                None
+            },
+            symbol_end,
         });
     }
 
@@ -563,6 +613,7 @@ fn index_search(
         index_root,
         search_root,
         max_results,
+        "file",
         file_type,
         compiled_glob,
         compiled_exclude,
@@ -843,7 +894,25 @@ fn hybrid_search(
 
     // Open embedding storage if available
     let embedding_storage = if embedding_db_path.exists() {
-        EmbeddingStorage::open(&embedding_db_path).ok()
+        match EmbeddingStorage::open(&embedding_db_path) {
+            Ok(storage) => match storage.is_symbol_unit() {
+                Ok(true) => Some(storage),
+                Ok(false) => {
+                    eprintln!(
+                        "Warning: embeddings DB schema mismatch (expected symbol-level). Using BM25 only."
+                    );
+                    None
+                }
+                Err(err) => {
+                    eprintln!("Warning: failed to read embeddings metadata: {}", err);
+                    None
+                }
+            },
+            Err(err) => {
+                eprintln!("Warning: failed to open embeddings DB: {}", err);
+                None
+            }
+        }
     } else {
         None
     };
@@ -860,6 +929,7 @@ fn hybrid_search(
         index_root,
         search_root,
         max_results * 3, // Get more for reranking
+        "symbol",
         file_type,
         compiled_glob,
         compiled_exclude,
@@ -875,24 +945,19 @@ fn hybrid_search(
             score: candidate.score,
             snippet: candidate.snippet,
             line: candidate.line,
-            chunk_start: candidate.line.map(|l| l as u32),
-            chunk_end: candidate.line.map(|l| l as u32),
+            chunk_start: candidate
+                .symbol_start
+                .or_else(|| candidate.line.map(|l| l as u32)),
+            chunk_end: candidate
+                .symbol_end
+                .or_else(|| candidate.line.map(|l| l as u32)),
+            symbol_id: candidate.symbol_id,
         })
         .collect();
 
     // Create hybrid searcher
     let hybrid_config = HybridConfig::default().with_max_results(max_results);
     let hybrid_searcher = HybridSearcher::new(hybrid_config);
-
-    // Helper to make result ID
-    let make_id = |path: &str, line: Option<usize>| -> String {
-        let input = match line {
-            Some(l) => format!("{}:{}", path, l),
-            None => path.to_string(),
-        };
-        let hash = blake3::hash(input.as_bytes());
-        hash.to_hex()[..16].to_string()
-    };
 
     // Perform hybrid search based on mode
     let hybrid_results: Vec<HybridResult> = match mode {
@@ -906,9 +971,10 @@ fn hybrid_search(
                     EmbeddingProviderType::Dummy => {
                         Ok(Box::new(DummyProvider::new(DEFAULT_EMBEDDING_DIM)))
                     }
-                    EmbeddingProviderType::Command => anyhow::bail!(
-                        "Embedding provider type 'command' is no longer supported. Use builtin fastembed."
-                    ),
+                    EmbeddingProviderType::Command => Ok(Box::new(CommandProvider::new(
+                        config.embeddings.command().to_string(),
+                        config.embeddings.model().to_string(),
+                    ))),
                 };
 
                 let query_embedding = match provider_result {
@@ -926,9 +992,15 @@ fn hybrid_search(
                 };
 
                 if let Some(query_embedding) = query_embedding {
-                    hybrid_searcher
-                        .rerank_with_embeddings(bm25_results, &query_embedding, storage)
-                        .unwrap_or_default()
+                    match mode {
+                        HybridSearchMode::Semantic => hybrid_searcher
+                            .semantic_search(bm25_results, &query_embedding, storage)
+                            .unwrap_or_default(),
+                        HybridSearchMode::Hybrid => hybrid_searcher
+                            .rerank_with_embeddings(bm25_results, &query_embedding, storage)
+                            .unwrap_or_default(),
+                        HybridSearchMode::Keyword => Vec::new(),
+                    }
                 } else {
                     bm25_results
                         .iter()
@@ -943,7 +1015,7 @@ fn hybrid_search(
                             line: r.line,
                             chunk_start: r.chunk_start,
                             chunk_end: r.chunk_end,
-                            result_id: Some(make_id(&r.path, r.line)),
+                            result_id: r.symbol_id.clone(),
                         })
                         .collect()
                 }
@@ -951,20 +1023,20 @@ fn hybrid_search(
                 eprintln!("Warning: No embedding storage found. Using BM25 only.");
                 bm25_results
                     .iter()
-                    .map(|r| HybridResult {
-                        path: r.path.clone(),
-                        score: r.score,
-                        text_score: r.score,
-                        vector_score: 0.0,
+                        .map(|r| HybridResult {
+                            path: r.path.clone(),
+                            score: r.score,
+                            text_score: r.score,
+                            vector_score: 0.0,
                         text_norm: r.score,
-                        vector_norm: 0.0,
-                        snippet: r.snippet.clone(),
-                        line: r.line,
-                        chunk_start: r.chunk_start,
-                        chunk_end: r.chunk_end,
-                        result_id: Some(make_id(&r.path, r.line)),
-                    })
-                    .collect()
+                            vector_norm: 0.0,
+                            snippet: r.snippet.clone(),
+                            line: r.line,
+                            chunk_start: r.chunk_start,
+                            chunk_end: r.chunk_end,
+                            result_id: r.symbol_id.clone(),
+                        })
+                        .collect()
             }
         }
         HybridSearchMode::Keyword => {
@@ -982,7 +1054,7 @@ fn hybrid_search(
                     line: r.line,
                     chunk_start: r.chunk_start,
                     chunk_end: r.chunk_end,
-                    result_id: Some(make_id(&r.path, r.line)),
+                    result_id: r.symbol_id.clone(),
                 })
                 .collect()
         }

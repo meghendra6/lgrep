@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! SQLite-based storage for code embedding vectors.
+//! SQLite-based storage for symbol embedding vectors.
 //!
 //! This module provides persistent storage for embedding vectors associated with
-//! code chunks. It supports CRUD operations, incremental updates based on file
+//! symbols. It supports CRUD operations, incremental updates based on file
 //! hashes, and brute-force cosine similarity search.
 
 use anyhow::{Context, Result};
@@ -13,43 +13,47 @@ use std::path::{Path, PathBuf};
 /// Default embedding dimension for sentence-transformers/all-MiniLM-L6-v2.
 pub const DEFAULT_EMBEDDING_DIM: usize = 384;
 
-/// Represents a code chunk with its embedding vector.
+/// Represents a symbol embedding with its metadata.
 #[derive(Debug, Clone)]
-pub struct EmbeddingChunk {
-    /// Unique identifier for this chunk
-    pub id: i64,
+pub struct SymbolEmbedding {
+    /// Unique identifier for this symbol
+    pub symbol_id: String,
     /// Path to the source file (relative to repository root)
     pub path: String,
+    /// Language identifier
+    pub lang: String,
+    /// Symbol kind (function, class, etc.)
+    pub symbol_kind: String,
+    /// Symbol name
+    pub symbol_name: String,
     /// Starting line number (1-indexed)
     pub start_line: u32,
     /// Ending line number (1-indexed, inclusive)
     pub end_line: u32,
-    /// Hash of the chunk content for change detection
-    pub content_hash: String,
+    /// Hash of the file content for change detection
+    pub file_hash: String,
     /// Embedding vector (f32 values)
     pub embedding: Vec<f32>,
     /// Unix timestamp when this embedding was created
     pub created_at: i64,
 }
 
-/// Metadata about a file's embeddings.
-#[derive(Debug, Clone)]
-pub struct FileEmbeddingInfo {
-    /// Path to the source file
-    pub path: String,
-    /// Hash of the entire file content
-    pub file_hash: String,
-    /// Last modification timestamp
-    pub last_modified: i64,
-    /// Number of chunks in this file
-    pub chunk_count: u32,
+/// Input symbol data for bulk embedding writes.
+pub struct SymbolEmbeddingInput<'a> {
+    pub symbol_id: &'a str,
+    pub lang: &'a str,
+    pub symbol_kind: &'a str,
+    pub symbol_name: &'a str,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub embedding: &'a [f32],
 }
 
 /// A search result from similarity search.
 #[derive(Debug, Clone)]
 pub struct SimilarityResult {
-    /// The matching chunk
-    pub chunk: EmbeddingChunk,
+    /// The matching symbol
+    pub symbol: SymbolEmbedding,
     /// Cosine similarity score (0.0 to 1.0)
     pub score: f32,
 }
@@ -60,14 +64,6 @@ pub struct SimilarityResult {
 pub struct EmbeddingStorage {
     conn: Connection,
     path: PathBuf,
-}
-
-/// Input chunk data for bulk embedding writes.
-pub struct EmbeddingChunkInput<'a> {
-    pub start_line: u32,
-    pub end_line: u32,
-    pub content_hash: &'a str,
-    pub embedding: &'a [f32],
 }
 
 impl EmbeddingStorage {
@@ -83,9 +79,15 @@ impl EmbeddingStorage {
 
         let conn = Connection::open(&path)
             .with_context(|| format!("Failed to open database: {}", path.display()))?;
+        let has_tables: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |row| row.get(0),
+        )?;
+        let bootstrap_meta = has_tables == 0;
 
         let storage = Self { conn, path };
-        storage.init_schema()?;
+        storage.init_schema(bootstrap_meta)?;
 
         Ok(storage)
     }
@@ -97,40 +99,57 @@ impl EmbeddingStorage {
     }
 
     /// Initializes the database schema if it does not exist.
-    fn init_schema(&self) -> Result<()> {
+    fn init_schema(&self, bootstrap_meta: bool) -> Result<()> {
         self.conn
             .execute_batch(
                 r#"
-            CREATE TABLE IF NOT EXISTS embedding_chunks (
-                id INTEGER PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS symbol_embeddings (
+                symbol_id TEXT PRIMARY KEY,
                 path TEXT NOT NULL,
+                lang TEXT NOT NULL,
+                symbol_kind TEXT NOT NULL,
+                symbol_name TEXT NOT NULL,
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL,
-                content_hash TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
                 embedding BLOB NOT NULL,
                 created_at INTEGER NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_embedding_chunks_path_line 
-                ON embedding_chunks(path, start_line, end_line);
-
-            CREATE TABLE IF NOT EXISTS embedding_files (
-                path TEXT PRIMARY KEY,
-                file_hash TEXT NOT NULL,
-                last_modified INTEGER NOT NULL,
-                chunk_count INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS embeddings_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
+            CREATE INDEX IF NOT EXISTS idx_symbol_embeddings_path_line
+                ON symbol_embeddings(path, start_line, end_line);
             "#,
             )
             .context("Failed to initialize database schema")?;
 
-        self.set_meta_if_absent("schema_version", "1")?;
+        if bootstrap_meta {
+            self.set_meta("schema_version", "2")?;
+            self.set_meta("unit", "symbol")?;
+        }
+
         Ok(())
+    }
+
+    /// Resets the database schema, dropping old tables.
+    pub fn reset_schema(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                r#"
+            DROP TABLE IF EXISTS embedding_chunks;
+            DROP TABLE IF EXISTS embedding_files;
+            DROP TABLE IF EXISTS embeddings_meta;
+            DROP TABLE IF EXISTS symbol_embeddings;
+            DROP TABLE IF EXISTS meta;
+            "#,
+            )
+            .context("Failed to reset embedding schema")?;
+
+        self.init_schema(true)
     }
 
     /// Returns the path to the database file.
@@ -144,162 +163,140 @@ impl EmbeddingStorage {
         Ok(())
     }
 
-    /// Stores an embedding chunk in the database.
-    pub fn store_chunk(
-        &self,
-        path: &str,
-        start_line: u32,
-        end_line: u32,
-        content_hash: &str,
-        embedding: &[f32],
-    ) -> Result<i64> {
-        let embedding_blob = Self::embedding_to_blob(embedding);
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        self.conn.execute(
-            r#"
-            INSERT INTO embedding_chunks (path, start_line, end_line, content_hash, embedding, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            "#,
-            params![path, start_line, end_line, content_hash, embedding_blob, created_at],
-        ).context("Failed to store embedding chunk")?;
-
-        Ok(self.conn.last_insert_rowid())
+    /// Checks if this database is using symbol-level embeddings.
+    pub fn is_symbol_unit(&self) -> Result<bool> {
+        Ok(self.get_meta("unit")?.as_deref() == Some("symbol"))
     }
 
     /// Replaces all embeddings for a file in a single transaction.
     ///
-    /// This deletes any existing chunks for the file and then inserts the new chunks and file info.
-    pub fn replace_file_embeddings(
+    /// This deletes any existing symbols for the file and then inserts the new symbols.
+    pub fn replace_file_symbols(
         &mut self,
         path: &str,
         file_hash: &str,
-        last_modified: i64,
-        chunks: &[EmbeddingChunkInput<'_>],
+        symbols: &[SymbolEmbeddingInput<'_>],
     ) -> Result<()> {
         let tx = self.conn.transaction()?;
 
         tx.execute(
-            "DELETE FROM embedding_chunks WHERE path = ?1",
+            "DELETE FROM symbol_embeddings WHERE path = ?1",
             params![path],
         )?;
-        tx.execute("DELETE FROM embedding_files WHERE path = ?1", params![path])?;
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
 
-        {
+        if !symbols.is_empty() {
             let mut stmt = tx.prepare(
                 r#"
-                INSERT INTO embedding_chunks (path, start_line, end_line, content_hash, embedding, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                INSERT INTO symbol_embeddings (
+                    symbol_id, path, lang, symbol_kind, symbol_name, start_line, end_line,
+                    file_hash, embedding, created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 "#,
             )?;
-            for chunk in chunks {
-                let embedding_blob = Self::embedding_to_blob(chunk.embedding);
+
+            for symbol in symbols {
+                let embedding_blob = Self::embedding_to_blob(symbol.embedding);
                 stmt.execute(params![
+                    symbol.symbol_id,
                     path,
-                    chunk.start_line,
-                    chunk.end_line,
-                    chunk.content_hash,
+                    symbol.lang,
+                    symbol.symbol_kind,
+                    symbol.symbol_name,
+                    symbol.start_line,
+                    symbol.end_line,
+                    file_hash,
                     embedding_blob,
                     created_at
                 ])?;
             }
         }
 
-        tx.execute(
-            r#"
-            INSERT INTO embedding_files (path, file_hash, last_modified, chunk_count)
-            VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(path) DO UPDATE SET
-                file_hash = excluded.file_hash,
-                last_modified = excluded.last_modified,
-                chunk_count = excluded.chunk_count
-            "#,
-            params![path, file_hash, last_modified, chunks.len() as u32],
-        )?;
-
         tx.commit()?;
         Ok(())
     }
 
-    /// Retrieves all embedding chunks for a given file path.
-    pub fn get_chunks_for_path(&self, path: &str) -> Result<Vec<EmbeddingChunk>> {
+    /// Retrieves all symbol embeddings for a given file path.
+    pub fn get_symbols_for_path(&self, path: &str) -> Result<Vec<SymbolEmbedding>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, path, start_line, end_line, content_hash, embedding, created_at
-            FROM embedding_chunks
+            SELECT symbol_id, path, lang, symbol_kind, symbol_name, start_line, end_line,
+                   file_hash, embedding, created_at
+            FROM symbol_embeddings
             WHERE path = ?1
             ORDER BY start_line
             "#,
         )?;
 
-        let chunks = stmt
+        let symbols = stmt
             .query_map(params![path], |row| {
-                let embedding_blob: Vec<u8> = row.get(5)?;
-                Ok(EmbeddingChunk {
-                    id: row.get(0)?,
+                let embedding_blob: Vec<u8> = row.get(8)?;
+                Ok(SymbolEmbedding {
+                    symbol_id: row.get(0)?,
                     path: row.get(1)?,
-                    start_line: row.get(2)?,
-                    end_line: row.get(3)?,
-                    content_hash: row.get(4)?,
+                    lang: row.get(2)?,
+                    symbol_kind: row.get(3)?,
+                    symbol_name: row.get(4)?,
+                    start_line: row.get(5)?,
+                    end_line: row.get(6)?,
+                    file_hash: row.get(7)?,
                     embedding: Self::blob_to_embedding(&embedding_blob),
-                    created_at: row.get(6)?,
+                    created_at: row.get(9)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .context("Failed to query chunks")?;
+            .context("Failed to query symbols")?;
 
-        Ok(chunks)
+        Ok(symbols)
     }
 
-    /// Retrieves a specific embedding chunk by ID.
-    pub fn get_chunk(&self, id: i64) -> Result<Option<EmbeddingChunk>> {
+    /// Retrieves a specific symbol embedding by ID.
+    pub fn get_symbol(&self, symbol_id: &str) -> Result<Option<SymbolEmbedding>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, path, start_line, end_line, content_hash, embedding, created_at
-            FROM embedding_chunks
-            WHERE id = ?1
+            SELECT symbol_id, path, lang, symbol_kind, symbol_name, start_line, end_line,
+                   file_hash, embedding, created_at
+            FROM symbol_embeddings
+            WHERE symbol_id = ?1
             "#,
         )?;
 
-        let chunk = stmt
-            .query_row(params![id], |row| {
-                let embedding_blob: Vec<u8> = row.get(5)?;
-                Ok(EmbeddingChunk {
-                    id: row.get(0)?,
+        let symbol = stmt
+            .query_row(params![symbol_id], |row| {
+                let embedding_blob: Vec<u8> = row.get(8)?;
+                Ok(SymbolEmbedding {
+                    symbol_id: row.get(0)?,
                     path: row.get(1)?,
-                    start_line: row.get(2)?,
-                    end_line: row.get(3)?,
-                    content_hash: row.get(4)?,
+                    lang: row.get(2)?,
+                    symbol_kind: row.get(3)?,
+                    symbol_name: row.get(4)?,
+                    start_line: row.get(5)?,
+                    end_line: row.get(6)?,
+                    file_hash: row.get(7)?,
                     embedding: Self::blob_to_embedding(&embedding_blob),
-                    created_at: row.get(6)?,
+                    created_at: row.get(9)?,
                 })
             })
             .optional()
-            .context("Failed to query chunk")?;
+            .context("Failed to query symbol")?;
 
-        Ok(chunk)
+        Ok(symbol)
     }
 
-    /// Deletes all embedding chunks for a given file path.
-    pub fn delete_file_chunks(&self, path: &str) -> Result<usize> {
+    /// Deletes all symbol embeddings for a given file path.
+    pub fn delete_file_symbols(&self, path: &str) -> Result<usize> {
         let deleted = self
             .conn
             .execute(
-                "DELETE FROM embedding_chunks WHERE path = ?1",
+                "DELETE FROM symbol_embeddings WHERE path = ?1",
                 params![path],
             )
-            .context("Failed to delete chunks")?;
-
-        self.conn
-            .execute("DELETE FROM embedding_files WHERE path = ?1", params![path])?;
+            .context("Failed to delete symbols")?;
 
         Ok(deleted)
     }
@@ -309,8 +306,7 @@ impl EmbeddingStorage {
         self.conn
             .execute_batch(
                 r#"
-            DELETE FROM embedding_chunks;
-            DELETE FROM embedding_files;
+            DELETE FROM symbol_embeddings;
             "#,
             )
             .context("Failed to clear all embeddings")?;
@@ -323,7 +319,7 @@ impl EmbeddingStorage {
         let stored_hash: Option<String> = self
             .conn
             .query_row(
-                "SELECT file_hash FROM embedding_files WHERE path = ?1",
+                "SELECT file_hash FROM symbol_embeddings WHERE path = ?1 LIMIT 1",
                 params![path],
                 |row| row.get(0),
             )
@@ -333,116 +329,27 @@ impl EmbeddingStorage {
         Ok(stored_hash.as_deref() != Some(current_hash))
     }
 
-    /// Gets information about a file's embeddings.
-    pub fn get_file_info(&self, path: &str) -> Result<Option<FileEmbeddingInfo>> {
-        let info = self
-            .conn
-            .query_row(
-                r#"
-                SELECT path, file_hash, last_modified, chunk_count
-                FROM embedding_files
-                WHERE path = ?1
-                "#,
-                params![path],
-                |row| {
-                    Ok(FileEmbeddingInfo {
-                        path: row.get(0)?,
-                        file_hash: row.get(1)?,
-                        last_modified: row.get(2)?,
-                        chunk_count: row.get(3)?,
-                    })
-                },
-            )
-            .optional()
-            .context("Failed to query file info")?;
-
-        Ok(info)
-    }
-
-    /// Updates or inserts file embedding metadata.
-    pub fn upsert_file_info(
-        &self,
-        path: &str,
-        file_hash: &str,
-        last_modified: i64,
-        chunk_count: u32,
-    ) -> Result<()> {
-        self.conn
-            .execute(
-                r#"
-            INSERT INTO embedding_files (path, file_hash, last_modified, chunk_count)
-            VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(path) DO UPDATE SET
-                file_hash = excluded.file_hash,
-                last_modified = excluded.last_modified,
-                chunk_count = excluded.chunk_count
-            "#,
-                params![path, file_hash, last_modified, chunk_count],
-            )
-            .context("Failed to upsert file info")?;
-
-        Ok(())
-    }
-
     /// Lists all files that have embeddings.
-    pub fn list_files(&self) -> Result<Vec<FileEmbeddingInfo>> {
+    pub fn list_paths(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT path, file_hash, last_modified, chunk_count
-            FROM embedding_files
+            SELECT DISTINCT path
+            FROM symbol_embeddings
             ORDER BY path
             "#,
         )?;
 
-        let files = stmt
-            .query_map([], |row| {
-                Ok(FileEmbeddingInfo {
-                    path: row.get(0)?,
-                    file_hash: row.get(1)?,
-                    last_modified: row.get(2)?,
-                    chunk_count: row.get(3)?,
-                })
-            })?
+        let paths = stmt
+            .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .context("Failed to list files")?;
+            .context("Failed to list paths")?;
 
-        Ok(files)
-    }
-
-    /// Finds the chunk containing a specific line in a file.
-    pub fn get_chunk_for_line(&self, path: &str, line: u32) -> Result<Option<EmbeddingChunk>> {
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT id, path, start_line, end_line, content_hash, embedding, created_at
-            FROM embedding_chunks
-            WHERE path = ?1 AND start_line <= ?2 AND end_line >= ?2
-            ORDER BY start_line
-            LIMIT 1
-            "#,
-        )?;
-
-        let chunk = stmt
-            .query_row(params![path, line], |row| {
-                let embedding_blob: Vec<u8> = row.get(5)?;
-                Ok(EmbeddingChunk {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    start_line: row.get(2)?,
-                    end_line: row.get(3)?,
-                    content_hash: row.get(4)?,
-                    embedding: Self::blob_to_embedding(&embedding_blob),
-                    created_at: row.get(6)?,
-                })
-            })
-            .optional()
-            .context("Failed to query chunk for line")?;
-
-        Ok(chunk)
+        Ok(paths)
     }
 
     /// Performs brute-force similarity search across all embeddings.
     ///
-    /// Returns chunks sorted by descending cosine similarity.
+    /// Returns symbols sorted by descending cosine similarity.
     pub fn search_similar(
         &self,
         query_embedding: &[f32],
@@ -450,25 +357,29 @@ impl EmbeddingStorage {
     ) -> Result<Vec<SimilarityResult>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, path, start_line, end_line, content_hash, embedding, created_at
-            FROM embedding_chunks
+            SELECT symbol_id, path, lang, symbol_kind, symbol_name, start_line, end_line,
+                   file_hash, embedding, created_at
+            FROM symbol_embeddings
             "#,
         )?;
 
         let mut results: Vec<SimilarityResult> = stmt
             .query_map([], |row| {
-                let embedding_blob: Vec<u8> = row.get(5)?;
+                let embedding_blob: Vec<u8> = row.get(8)?;
                 let embedding = Self::blob_to_embedding(&embedding_blob);
                 let score = Self::cosine_similarity(query_embedding, &embedding);
                 Ok(SimilarityResult {
-                    chunk: EmbeddingChunk {
-                        id: row.get(0)?,
+                    symbol: SymbolEmbedding {
+                        symbol_id: row.get(0)?,
                         path: row.get(1)?,
-                        start_line: row.get(2)?,
-                        end_line: row.get(3)?,
-                        content_hash: row.get(4)?,
+                        lang: row.get(2)?,
+                        symbol_kind: row.get(3)?,
+                        symbol_name: row.get(4)?,
+                        start_line: row.get(5)?,
+                        end_line: row.get(6)?,
+                        file_hash: row.get(7)?,
                         embedding,
-                        created_at: row.get(6)?,
+                        created_at: row.get(9)?,
                     },
                     score,
                 })
@@ -487,13 +398,13 @@ impl EmbeddingStorage {
         Ok(results)
     }
 
-    /// Counts total number of embedding chunks.
-    pub fn count_chunks(&self) -> Result<u64> {
-        let count: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM embedding_chunks", [], |row| {
-                    row.get(0)
-                })?;
+    /// Counts total number of symbol embeddings.
+    pub fn count_symbols(&self) -> Result<u64> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM symbol_embeddings", [], |row| {
+                row.get(0)
+            })?;
         Ok(count as u64)
     }
 
@@ -502,7 +413,7 @@ impl EmbeddingStorage {
         let value = self
             .conn
             .query_row(
-                "SELECT value FROM embeddings_meta WHERE key = ?1",
+                "SELECT value FROM meta WHERE key = ?1",
                 params![key],
                 |row| row.get(0),
             )
@@ -515,7 +426,7 @@ impl EmbeddingStorage {
     pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
             r#"
-            INSERT INTO embeddings_meta (key, value)
+            INSERT INTO meta (key, value)
             VALUES (?1, ?2)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             "#,
@@ -525,9 +436,10 @@ impl EmbeddingStorage {
     }
 
     /// Sets metadata value only if key doesn't exist.
+    #[allow(dead_code)]
     fn set_meta_if_absent(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO embeddings_meta (key, value) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
             params![key, value],
         )?;
         Ok(())
@@ -588,159 +500,142 @@ mod tests {
     }
 
     #[test]
-    fn test_store_and_retrieve_chunk() {
+    fn test_store_and_retrieve_symbol() {
         let dir = tempdir().unwrap();
-        let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
+        let mut storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
 
         let embedding = create_test_embedding(384, 0.5);
-        let id = storage
-            .store_chunk("src/main.rs", 1, 40, "abc123", &embedding)
-            .unwrap();
+        let input = SymbolEmbeddingInput {
+            symbol_id: "sym1",
+            lang: "rust",
+            symbol_kind: "function",
+            symbol_name: "main",
+            start_line: 1,
+            end_line: 3,
+            embedding: &embedding,
+        };
 
-        let chunk = storage.get_chunk(id).unwrap().unwrap();
-        assert_eq!(chunk.path, "src/main.rs");
-        assert_eq!(chunk.start_line, 1);
-        assert_eq!(chunk.end_line, 40);
-        assert_eq!(chunk.embedding.len(), 384);
-    }
-
-    #[test]
-    fn test_file_info() {
-        let dir = tempdir().unwrap();
-        let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
-
-        // Initially no file info
-        assert!(storage.get_file_info("src/main.rs").unwrap().is_none());
-
-        // Add file info
         storage
-            .upsert_file_info("src/main.rs", "hash1", 1000, 5)
+            .replace_file_symbols("src/main.rs", "hash", &[input])
             .unwrap();
 
-        let info = storage.get_file_info("src/main.rs").unwrap().unwrap();
-        assert_eq!(info.file_hash, "hash1");
-        assert_eq!(info.chunk_count, 5);
-
-        // Update file info
-        storage
-            .upsert_file_info("src/main.rs", "hash2", 2000, 10)
-            .unwrap();
-
-        let info = storage.get_file_info("src/main.rs").unwrap().unwrap();
-        assert_eq!(info.file_hash, "hash2");
-        assert_eq!(info.chunk_count, 10);
+        let symbol = storage.get_symbol("sym1").unwrap().unwrap();
+        assert_eq!(symbol.path, "src/main.rs");
+        assert_eq!(symbol.start_line, 1);
+        assert_eq!(symbol.end_line, 3);
+        assert_eq!(symbol.embedding.len(), 384);
     }
 
     #[test]
     fn test_file_needs_update() {
         let dir = tempdir().unwrap();
-        let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
+        let mut storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
 
         // New file always needs update
         assert!(storage.file_needs_update("src/main.rs", "hash1").unwrap());
 
-        // Add file
+        let embedding = create_test_embedding(4, 0.1);
+        let input = SymbolEmbeddingInput {
+            symbol_id: "sym1",
+            lang: "rust",
+            symbol_kind: "function",
+            symbol_name: "main",
+            start_line: 1,
+            end_line: 3,
+            embedding: &embedding,
+        };
+
         storage
-            .upsert_file_info("src/main.rs", "hash1", 1000, 1)
+            .replace_file_symbols("src/main.rs", "hash1", &[input])
             .unwrap();
 
-        // Same hash doesn't need update
         assert!(!storage.file_needs_update("src/main.rs", "hash1").unwrap());
-
-        // Different hash needs update
         assert!(storage.file_needs_update("src/main.rs", "hash2").unwrap());
     }
 
     #[test]
     fn test_similarity_search() {
         let dir = tempdir().unwrap();
-        let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
+        let mut storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
 
-        // Store test embeddings
+        let embedding_a = vec![1.0, 0.0, 0.0];
+        let embedding_b = vec![0.0, 1.0, 0.0];
+        let embedding_c = vec![0.9, 0.1, 0.0];
+
+        let inputs = vec![
+            SymbolEmbeddingInput {
+                symbol_id: "a",
+                lang: "rust",
+                symbol_kind: "function",
+                symbol_name: "a",
+                start_line: 1,
+                end_line: 1,
+                embedding: &embedding_a,
+            },
+            SymbolEmbeddingInput {
+                symbol_id: "b",
+                lang: "rust",
+                symbol_kind: "function",
+                symbol_name: "b",
+                start_line: 2,
+                end_line: 2,
+                embedding: &embedding_b,
+            },
+            SymbolEmbeddingInput {
+                symbol_id: "c",
+                lang: "rust",
+                symbol_kind: "function",
+                symbol_name: "c",
+                start_line: 3,
+                end_line: 3,
+                embedding: &embedding_c,
+            },
+        ];
+
         storage
-            .store_chunk("a.rs", 1, 10, "h1", &[1.0, 0.0, 0.0])
-            .unwrap();
-        storage
-            .store_chunk("b.rs", 1, 10, "h2", &[0.0, 1.0, 0.0])
-            .unwrap();
-        storage
-            .store_chunk("c.rs", 1, 10, "h3", &[0.9, 0.1, 0.0])
+            .replace_file_symbols("src/lib.rs", "hash", &inputs)
             .unwrap();
 
-        // Query similar to a.rs
         let results = storage.search_similar(&[1.0, 0.0, 0.0], 2).unwrap();
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].chunk.path, "a.rs");
+        assert_eq!(results[0].symbol.symbol_id, "a");
         assert!((results[0].score - 1.0).abs() < 0.0001);
     }
 
     #[test]
-    fn test_cosine_similarity() {
-        // Identical vectors
-        let a = vec![1.0, 2.0, 3.0];
-        let b = vec![1.0, 2.0, 3.0];
-        let sim = EmbeddingStorage::cosine_similarity(&a, &b);
-        assert!((sim - 1.0).abs() < 0.0001);
-
-        // Orthogonal vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![0.0, 1.0, 0.0];
-        let sim = EmbeddingStorage::cosine_similarity(&a, &b);
-        assert!(sim.abs() < 0.0001);
-
-        // Opposite vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![-1.0, 0.0, 0.0];
-        let sim = EmbeddingStorage::cosine_similarity(&a, &b);
-        assert!((sim - (-1.0)).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_delete_file_chunks() {
+    fn test_delete_file_symbols() {
         let dir = tempdir().unwrap();
-        let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
+        let mut storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
+
+        let embedding = vec![1.0, 0.0];
+        let inputs = vec![
+            SymbolEmbeddingInput {
+                symbol_id: "a1",
+                lang: "rust",
+                symbol_kind: "function",
+                symbol_name: "a",
+                start_line: 1,
+                end_line: 1,
+                embedding: &embedding,
+            },
+            SymbolEmbeddingInput {
+                symbol_id: "a2",
+                lang: "rust",
+                symbol_kind: "function",
+                symbol_name: "b",
+                start_line: 2,
+                end_line: 2,
+                embedding: &embedding,
+            },
+        ];
 
         storage
-            .store_chunk("a.rs", 1, 10, "h1", &[1.0, 0.0])
+            .replace_file_symbols("a.rs", "hash", &inputs)
             .unwrap();
-        storage
-            .store_chunk("a.rs", 11, 20, "h2", &[0.0, 1.0])
-            .unwrap();
-        storage
-            .store_chunk("b.rs", 1, 10, "h3", &[1.0, 1.0])
-            .unwrap();
-        storage.upsert_file_info("a.rs", "hash", 1000, 2).unwrap();
 
-        let deleted = storage.delete_file_chunks("a.rs").unwrap();
+        let deleted = storage.delete_file_symbols("a.rs").unwrap();
         assert_eq!(deleted, 2);
-
-        assert!(storage.get_file_info("a.rs").unwrap().is_none());
-        let a_chunks = storage.get_chunks_for_path("a.rs").unwrap();
-        assert!(a_chunks.is_empty());
-
-        let b_chunks = storage.get_chunks_for_path("b.rs").unwrap();
-        assert_eq!(b_chunks.len(), 1);
-    }
-
-    #[test]
-    fn test_get_chunk_for_line() {
-        let dir = tempdir().unwrap();
-        let storage = EmbeddingStorage::open(dir.path().join("test.sqlite")).unwrap();
-
-        storage.store_chunk("a.rs", 1, 40, "h1", &[1.0]).unwrap();
-        storage.store_chunk("a.rs", 21, 60, "h2", &[0.5]).unwrap();
-        storage.store_chunk("a.rs", 41, 80, "h3", &[0.0]).unwrap();
-
-        // Line 10 is in chunk 1
-        let chunk = storage.get_chunk_for_line("a.rs", 10).unwrap().unwrap();
-        assert_eq!(chunk.start_line, 1);
-
-        // Line 30 is in chunks 1 and 2 (overlap), returns first
-        let chunk = storage.get_chunk_for_line("a.rs", 30).unwrap().unwrap();
-        assert_eq!(chunk.start_line, 1);
-
-        // Line 100 is not in any chunk
-        let chunk = storage.get_chunk_for_line("a.rs", 100).unwrap();
-        assert!(chunk.is_none());
+        let remaining = storage.get_symbols_for_path("a.rs").unwrap();
+        assert!(remaining.is_empty());
     }
 }

@@ -115,10 +115,12 @@ pub struct BM25Result {
     pub snippet: String,
     /// Line number of match (1-indexed)
     pub line: Option<usize>,
-    /// Chunk start line (for embedding lookup)
+    /// Symbol start line (for embedding lookup)
     pub chunk_start: Option<u32>,
-    /// Chunk end line
+    /// Symbol end line
     pub chunk_end: Option<u32>,
+    /// Symbol identifier for embedding lookup
+    pub symbol_id: Option<String>,
 }
 
 /// A hybrid search result with both text and vector scores
@@ -140,9 +142,9 @@ pub struct HybridResult {
     pub snippet: String,
     /// Line number of match (1-indexed)
     pub line: Option<usize>,
-    /// Chunk start line (for context)
+    /// Symbol start line (for context)
     pub chunk_start: Option<u32>,
-    /// Chunk end line
+    /// Symbol end line
     pub chunk_end: Option<u32>,
     /// Stable result ID (blake3 hash)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,25 +221,21 @@ impl HybridSearcher {
         for (i, bm25) in bm25_results.into_iter().enumerate() {
             let text_norm = text_norms[i];
 
-            // Look up embedding for this result's line
-            let (vector_score, vector_norm, chunk_start, chunk_end) = if let Some(line) = bm25.line
-            {
-                match storage.get_chunk_for_line(&bm25.path, line as u32) {
-                    Ok(Some(chunk)) => {
-                        let cos_sim = Self::cosine_similarity(query_embedding, &chunk.embedding);
+            // Look up embedding for this symbol
+            let (vector_score, vector_norm) = if let Some(ref symbol_id) = bm25.symbol_id {
+                match storage.get_symbol(symbol_id) {
+                    Ok(Some(symbol)) => {
+                        let cos_sim = Self::cosine_similarity(query_embedding, &symbol.embedding);
                         let norm = Self::normalize_vector_score(cos_sim);
-                        (cos_sim, norm, Some(chunk.start_line), Some(chunk.end_line))
+                        (cos_sim, norm)
                     }
-                    _ => (0.0, 0.5, bm25.chunk_start, bm25.chunk_end),
+                    _ => (0.0, 0.5),
                 }
             } else {
-                (0.0, 0.5, bm25.chunk_start, bm25.chunk_end)
+                (0.0, 0.5)
             };
 
             let hybrid_score = self.combine_scores(text_norm, vector_norm);
-
-            // Generate stable result ID
-            let result_id = Self::generate_result_id(&bm25.path, bm25.line, &bm25.snippet);
 
             hybrid_results.push(HybridResult {
                 path: bm25.path,
@@ -248,9 +246,9 @@ impl HybridSearcher {
                 vector_norm,
                 snippet: bm25.snippet,
                 line: bm25.line,
-                chunk_start,
-                chunk_end,
-                result_id: Some(result_id),
+                chunk_start: bm25.chunk_start,
+                chunk_end: bm25.chunk_end,
+                result_id: bm25.symbol_id,
             });
         }
 
@@ -281,51 +279,42 @@ impl HybridSearcher {
     /// Perform pure semantic search using embeddings only
     pub fn semantic_search(
         &self,
+        bm25_results: Vec<BM25Result>,
         query_embedding: &[f32],
         storage: &EmbeddingStorage,
     ) -> Result<Vec<HybridResult>> {
-        let similarity_results =
-            storage.search_similar(query_embedding, self.config.max_results)?;
+        let mut results = Vec::with_capacity(bm25_results.len());
 
-        let results: Vec<HybridResult> = similarity_results
-            .into_iter()
-            .map(|sim| {
-                let vector_norm = Self::normalize_vector_score(sim.score);
-                let result_id = Self::generate_result_id(
-                    &sim.chunk.path,
-                    Some(sim.chunk.start_line as usize),
-                    "", // No snippet for semantic search
-                );
-
-                HybridResult {
-                    path: sim.chunk.path,
-                    score: vector_norm, // Score is just the vector score in semantic mode
-                    text_score: 0.0,
-                    vector_score: sim.score,
-                    text_norm: 0.0,
-                    vector_norm,
-                    snippet: String::new(), // Will be filled later
-                    line: Some(sim.chunk.start_line as usize),
-                    chunk_start: Some(sim.chunk.start_line),
-                    chunk_end: Some(sim.chunk.end_line),
-                    result_id: Some(result_id),
+        for bm25 in bm25_results {
+            let (vector_score, vector_norm) = if let Some(ref symbol_id) = bm25.symbol_id {
+                match storage.get_symbol(symbol_id) {
+                    Ok(Some(symbol)) => {
+                        let cos_sim = Self::cosine_similarity(query_embedding, &symbol.embedding);
+                        let norm = Self::normalize_vector_score(cos_sim);
+                        (cos_sim, norm)
+                    }
+                    _ => (0.0, 0.5),
                 }
-            })
-            .collect();
+            } else {
+                (0.0, 0.5)
+            };
+
+            results.push(HybridResult {
+                path: bm25.path,
+                score: vector_norm,
+                text_score: 0.0,
+                vector_score,
+                text_norm: 0.0,
+                vector_norm,
+                snippet: bm25.snippet,
+                line: bm25.line,
+                chunk_start: bm25.chunk_start,
+                chunk_end: bm25.chunk_end,
+                result_id: bm25.symbol_id,
+            });
+        }
 
         Ok(results)
-    }
-
-    /// Generate a stable result ID using blake3 hash
-    fn generate_result_id(path: &str, line: Option<usize>, snippet: &str) -> String {
-        let input = format!(
-            "{}:{}:{}",
-            path,
-            line.map(|l| l.to_string()).unwrap_or_default(),
-            snippet
-        );
-        let hash = blake3::hash(input.as_bytes());
-        hash.to_hex()[..16].to_string()
     }
 
     /// Compute cosine similarity between two vectors
@@ -489,6 +478,7 @@ mod tests {
                 line: Some(1),
                 chunk_start: None,
                 chunk_end: None,
+                symbol_id: None,
             },
             BM25Result {
                 path: "b.rs".into(),
@@ -497,6 +487,7 @@ mod tests {
                 line: Some(2),
                 chunk_start: None,
                 chunk_end: None,
+                symbol_id: None,
             },
         ];
 
@@ -521,17 +512,6 @@ mod tests {
 
         let combined = searcher.combine_scores(0.5, 0.5);
         assert!((combined - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_result_id_stability() {
-        let id1 = HybridSearcher::generate_result_id("src/main.rs", Some(42), "fn main()");
-        let id2 = HybridSearcher::generate_result_id("src/main.rs", Some(42), "fn main()");
-        assert_eq!(id1, id2);
-
-        // Different input should produce different ID
-        let id3 = HybridSearcher::generate_result_id("src/main.rs", Some(43), "fn main()");
-        assert_ne!(id1, id3);
     }
 
     #[test]

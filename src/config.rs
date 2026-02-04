@@ -45,7 +45,7 @@ pub enum EmbeddingProviderType {
     #[default]
     Builtin,
     Dummy,
-    /// Legacy provider (no longer supported).
+    /// Command provider (external process).
     Command,
 }
 
@@ -93,9 +93,9 @@ pub struct EmbeddingConfig {
     pub enabled: Option<EmbeddingEnabled>,
     /// Provider type (builtin, dummy)
     pub provider: Option<EmbeddingProviderType>,
-    /// Model identifier for the embedding provider (legacy; ignored by builtin provider)
+    /// Model identifier for the embedding provider (used by command provider)
     pub model: Option<String>,
-    /// Command to execute for command provider (legacy; unsupported)
+    /// Command to execute for command provider
     pub command: Option<String>,
     /// Number of lines per chunk
     pub chunk_lines: Option<usize>,
@@ -113,7 +113,7 @@ impl EmbeddingConfig {
         self.enabled.unwrap_or_default()
     }
 
-    /// Get provider type (defaults to Command)
+    /// Get provider type (defaults to Builtin)
     pub fn provider(&self) -> EmbeddingProviderType {
         self.provider.unwrap_or_default()
     }

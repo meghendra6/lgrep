@@ -54,6 +54,8 @@ pub struct Symbol {
     pub line: usize,
     pub column: usize,
     pub end_line: usize,
+    pub byte_start: Option<usize>,
+    pub byte_end: Option<usize>,
     pub scope: Option<String>,
 }
 
@@ -133,6 +135,8 @@ impl SymbolExtractor {
             line: node.start_position().row + 1,
             column: node.start_position().column + 1,
             end_line: node.end_position().row + 1,
+            byte_start: Some(node.start_byte()),
+            byte_end: Some(node.end_byte()),
             scope: None,
         })
     }
