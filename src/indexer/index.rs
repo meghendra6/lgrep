@@ -23,15 +23,13 @@ use crate::indexer::scanner::{detect_language, FileScanner};
 use crate::parser::symbols::SymbolExtractor;
 use cgrep::config::{Config, EmbeddingProviderType};
 use cgrep::embedding::{
-    ChunkConfig, EmbeddingChunkInput, EmbeddingChunker, EmbeddingProvider, EmbeddingProviderConfig,
-    EmbeddingStorage,
+    ChunkConfig, DummyProvider, EmbeddingChunkInput, EmbeddingChunker, EmbeddingProvider,
+    EmbeddingProviderConfig, EmbeddingStorage, FastEmbedder, DEFAULT_EMBEDDING_DIM,
 };
 use cgrep::utils::INDEX_DIR;
 const METADATA_FILE: &str = ".cgrep/metadata.json";
 pub(crate) const DEFAULT_WRITER_BUDGET_BYTES: usize = 50_000_000;
 const HIGH_MEMORY_WRITER_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
-const DEFAULT_EMBEDDING_BATCH_SIZE: usize = 32;
-const DEFAULT_EMBEDDING_BATCH_MAX_CHARS: usize = 200_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EmbeddingsMode {
@@ -77,8 +75,6 @@ fn create_embedding_provider(
     mode: EmbeddingsMode,
     config: &Config,
 ) -> Result<Option<Box<dyn EmbeddingProvider>>> {
-    use cgrep::embedding::provider::create_provider;
-
     // If the user explicitly disabled embeddings in config, honor it in auto mode.
     // (CLI `--embeddings=precompute` is considered an explicit override.)
     if mode == EmbeddingsMode::Auto
@@ -100,30 +96,23 @@ fn create_embedding_provider(
         || config.embeddings.chunk_lines.is_some()
         || config.embeddings.chunk_overlap.is_some()
         || config.embeddings.max_file_bytes.is_some()
-        || config.embeddings.semantic_max_chunks.is_some();
+        || config.embeddings.semantic_max_chunks.is_some()
+        || EmbeddingProviderConfig::has_env_overrides();
 
     let provider_type = config.embeddings.provider();
-    let provider = match provider_type {
-        EmbeddingProviderType::Command => EmbeddingProviderConfig {
-            provider: "command".to_string(),
-            model: config.embeddings.model().to_string(),
-            command: Some(config.embeddings.command().to_string()),
-            normalize: true,
-        },
-        EmbeddingProviderType::Dummy => EmbeddingProviderConfig {
-            provider: "dummy".to_string(),
-            model: "dummy".to_string(),
-            command: None,
-            normalize: true,
-        },
-        EmbeddingProviderType::Builtin => {
-            anyhow::bail!("Embedding provider type 'builtin' is not implemented yet.");
-        }
+    let provider_result: Result<Box<dyn EmbeddingProvider>> = match provider_type {
+        EmbeddingProviderType::Builtin => EmbeddingProviderConfig::from_env()
+            .and_then(|provider_config| FastEmbedder::new(provider_config))
+            .map(|provider| Box::new(provider) as Box<dyn EmbeddingProvider>),
+        EmbeddingProviderType::Dummy => Ok(Box::new(DummyProvider::new(DEFAULT_EMBEDDING_DIM))),
+        EmbeddingProviderType::Command => anyhow::bail!(
+            "Embedding provider type 'command' is no longer supported. Use builtin fastembed."
+        ),
     };
 
     match mode {
         EmbeddingsMode::Off => Ok(None),
-        EmbeddingsMode::Auto => match create_provider(&provider) {
+        EmbeddingsMode::Auto => match provider_result {
             Ok(p) => Ok(Some(p)),
             Err(err) => {
                 if has_embeddings_config {
@@ -135,7 +124,7 @@ fn create_embedding_provider(
                 Ok(None)
             }
         },
-        EmbeddingsMode::Precompute => Ok(Some(create_provider(&provider)?)),
+        EmbeddingsMode::Precompute => Ok(Some(provider_result?)),
     }
 }
 
@@ -160,25 +149,62 @@ fn read_utf8_text(path: &Path) -> Result<Option<String>> {
     read_utf8_text_bytes(&bytes)
 }
 
-fn embed_texts_batched(
-    provider: &dyn EmbeddingProvider,
-    texts: &[String],
-    batch_size: usize,
-) -> Result<(usize, Vec<Vec<f32>>)> {
-    if texts.is_empty() {
-        return Ok((0, Vec::new()));
+fn flush_embedding_batch(
+    provider: &mut dyn EmbeddingProvider,
+    batch_texts: &mut Vec<String>,
+    batch_entries: &mut Vec<EmbeddingBatchEntry>,
+    storage: &mut EmbeddingStorage,
+    stats: &mut EmbeddingIndexStats,
+) -> Result<()> {
+    if batch_texts.is_empty() {
+        return Ok(());
     }
 
-    let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-    let mut dimension: usize = 0;
-
-    for batch in texts.chunks(batch_size) {
-        let result = provider.embed(batch)?;
-        dimension = result.dimension;
-        all_vectors.extend(result.vectors);
+    let vectors = provider.embed_texts(batch_texts)?;
+    if vectors.len() != batch_texts.len() {
+        anyhow::bail!(
+            "Embedding provider returned {} vectors for {} inputs",
+            vectors.len(),
+            batch_texts.len()
+        );
     }
 
-    Ok((dimension, all_vectors))
+    if let Some(first) = vectors.first() {
+        let dimension = first.len();
+        if dimension > 0 {
+            let _ = storage.set_meta("dimension", &dimension.to_string());
+        }
+    }
+
+    for entry in batch_entries.iter() {
+        let end = entry.start_idx + entry.count;
+        let slice = &vectors[entry.start_idx..end];
+
+        let mut inputs: Vec<EmbeddingChunkInput<'_>> = Vec::with_capacity(entry.count);
+        for (i, embedding) in slice.iter().enumerate() {
+            let (start_line, end_line) = entry.chunk_lines[i];
+            inputs.push(EmbeddingChunkInput {
+                start_line,
+                end_line,
+                content_hash: entry.chunk_hashes[i].as_str(),
+                embedding: embedding.as_slice(),
+            });
+        }
+
+        storage.replace_file_embeddings(
+            &entry.path,
+            &entry.file_hash,
+            entry.last_modified,
+            &inputs,
+        )?;
+
+        stats.files_embedded += 1;
+        stats.chunks_embedded += entry.count;
+    }
+
+    batch_texts.clear();
+    batch_entries.clear();
+    Ok(())
 }
 
 fn index_embeddings(
@@ -188,7 +214,7 @@ fn index_embeddings(
     config: &Config,
     index_metadata: &IndexMetadata,
 ) -> Result<EmbeddingIndexStats> {
-    let Some(provider) = create_embedding_provider(mode, config)? else {
+    let Some(mut provider) = create_embedding_provider(mode, config)? else {
         return Ok(EmbeddingIndexStats::default());
     };
 
@@ -196,7 +222,8 @@ fn index_embeddings(
     let mut storage = EmbeddingStorage::open_default(root)?;
 
     // Best-effort: record model early (dimension becomes known after first embed call).
-    let _ = storage.set_meta("model", provider.model());
+    let _ = storage.set_meta("model", provider.model_id());
+    let batch_size = provider.batch_size();
 
     let result: Result<()> = (|| {
         if embeddings_force {
@@ -223,64 +250,7 @@ fn index_embeddings(
         let chunker = EmbeddingChunker::new(chunk_config);
 
         let mut batch_texts: Vec<String> = Vec::new();
-        let mut batch_chars: usize = 0;
         let mut batch_entries: Vec<EmbeddingBatchEntry> = Vec::new();
-
-        let flush_batch = |batch_texts: &mut Vec<String>,
-                           batch_entries: &mut Vec<EmbeddingBatchEntry>,
-                           storage: &mut EmbeddingStorage,
-                           provider: &dyn EmbeddingProvider,
-                           stats: &mut EmbeddingIndexStats|
-         -> Result<()> {
-            if batch_texts.is_empty() {
-                return Ok(());
-            }
-
-            let (dimension, vectors) =
-                embed_texts_batched(provider, batch_texts, DEFAULT_EMBEDDING_BATCH_SIZE)?;
-            if vectors.len() != batch_texts.len() {
-                anyhow::bail!(
-                    "Embedding provider returned {} vectors for {} inputs",
-                    vectors.len(),
-                    batch_texts.len()
-                );
-            }
-
-            // Persist dimension when first known.
-            if dimension > 0 {
-                let _ = storage.set_meta("dimension", &dimension.to_string());
-            }
-
-            for entry in batch_entries.iter() {
-                let end = entry.start_idx + entry.count;
-                let slice = &vectors[entry.start_idx..end];
-
-                let mut inputs: Vec<EmbeddingChunkInput<'_>> = Vec::with_capacity(entry.count);
-                for (i, embedding) in slice.iter().enumerate() {
-                    let (start_line, end_line) = entry.chunk_lines[i];
-                    inputs.push(EmbeddingChunkInput {
-                        start_line,
-                        end_line,
-                        content_hash: entry.chunk_hashes[i].as_str(),
-                        embedding: embedding.as_slice(),
-                    });
-                }
-
-                storage.replace_file_embeddings(
-                    &entry.path,
-                    &entry.file_hash,
-                    entry.last_modified,
-                    &inputs,
-                )?;
-
-                stats.files_embedded += 1;
-                stats.chunks_embedded += entry.count;
-            }
-
-            batch_texts.clear();
-            batch_entries.clear();
-            Ok(())
-        };
 
         for (path, meta) in index_metadata.files.iter() {
             stats.files_total += 1;
@@ -338,24 +308,18 @@ fn index_embeddings(
             }
 
             // Batch across files but keep each file's chunks contiguous.
-            let file_chars: usize = texts.iter().map(|t| t.len()).sum();
-            if !batch_texts.is_empty()
-                && (batch_texts.len() + texts.len() > DEFAULT_EMBEDDING_BATCH_SIZE
-                    || batch_chars + file_chars > DEFAULT_EMBEDDING_BATCH_MAX_CHARS)
-            {
-                flush_batch(
+            if !batch_texts.is_empty() && batch_texts.len() + texts.len() > batch_size {
+                flush_embedding_batch(
+                    provider.as_mut(),
                     &mut batch_texts,
                     &mut batch_entries,
                     &mut storage,
-                    provider.as_ref(),
                     &mut stats,
                 )?;
-                batch_chars = 0;
             }
 
             let start_idx = batch_texts.len();
             let count = texts.len();
-            batch_chars += file_chars;
             batch_texts.extend(texts);
             batch_entries.push(EmbeddingBatchEntry {
                 path: path.clone(),
@@ -368,11 +332,11 @@ fn index_embeddings(
             });
         }
 
-        flush_batch(
+        flush_embedding_batch(
+            provider.as_mut(),
             &mut batch_texts,
             &mut batch_entries,
             &mut storage,
-            provider.as_ref(),
             &mut stats,
         )?;
 

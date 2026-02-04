@@ -22,9 +22,10 @@ use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
 use cgrep::cache::{CacheKey, SearchCache};
 use cgrep::config::{Config, EmbeddingProviderType};
-use cgrep::embedding::provider::create_provider;
-use cgrep::embedding::storage::EmbeddingStorage;
-use cgrep::embedding::EmbeddingProviderConfig;
+use cgrep::embedding::{
+    storage::EmbeddingStorage, DummyProvider, EmbeddingProvider, EmbeddingProviderConfig,
+    FastEmbedder, DEFAULT_EMBEDDING_DIM,
+};
 use cgrep::errors::IndexNotFoundError;
 use cgrep::filters::{
     matches_file_type, matches_glob_compiled, should_exclude_compiled, CompiledGlob,
@@ -898,36 +899,28 @@ fn hybrid_search(
         HybridSearchMode::Semantic | HybridSearchMode::Hybrid => {
             if let Some(ref storage) = embedding_storage {
                 let provider_type = config.embeddings.provider();
-                let provider_config = match provider_type {
-                    EmbeddingProviderType::Command => Some(EmbeddingProviderConfig {
-                        provider: "command".to_string(),
-                        model: config.embeddings.model().to_string(),
-                        command: Some(config.embeddings.command().to_string()),
-                        normalize: true,
-                    }),
-                    EmbeddingProviderType::Dummy => Some(EmbeddingProviderConfig {
-                        provider: "dummy".to_string(),
-                        model: "dummy".to_string(),
-                        command: None,
-                        normalize: true,
-                    }),
-                    EmbeddingProviderType::Builtin => None,
+                let provider_result: Result<Box<dyn EmbeddingProvider>> = match provider_type {
+                    EmbeddingProviderType::Builtin => EmbeddingProviderConfig::from_env()
+                        .and_then(|provider_config| FastEmbedder::new(provider_config))
+                        .map(|provider| Box::new(provider) as Box<dyn EmbeddingProvider>),
+                    EmbeddingProviderType::Dummy => {
+                        Ok(Box::new(DummyProvider::new(DEFAULT_EMBEDDING_DIM)))
+                    }
+                    EmbeddingProviderType::Command => anyhow::bail!(
+                        "Embedding provider type 'command' is no longer supported. Use builtin fastembed."
+                    ),
                 };
 
-                let query_embedding = match provider_config {
-                    Some(ref provider_config) => match create_provider(provider_config)
-                        .and_then(|p| p.embed_one(query))
-                    {
+                let query_embedding = match provider_result {
+                    Ok(mut provider) => match provider.embed_one(query) {
                         Ok(query_embedding) => Some(query_embedding),
                         Err(err) => {
                             eprintln!("Warning: embedding query failed (using BM25 only): {}", err);
                             None
                         }
                     },
-                    None => {
-                        eprintln!(
-                            "Warning: embedding provider type 'builtin' is not implemented yet. Using BM25 only."
-                        );
+                    Err(err) => {
+                        eprintln!("Warning: embedding provider unavailable: {}", err);
                         None
                     }
                 };

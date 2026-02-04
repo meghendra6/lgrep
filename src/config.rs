@@ -43,9 +43,10 @@ pub enum EmbeddingEnabled {
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingProviderType {
     #[default]
-    Command,
     Builtin,
     Dummy,
+    /// Legacy provider (no longer supported).
+    Command,
 }
 
 /// Search configuration
@@ -90,11 +91,11 @@ impl SearchConfig {
 pub struct EmbeddingConfig {
     /// Whether embeddings are enabled (off, auto, on)
     pub enabled: Option<EmbeddingEnabled>,
-    /// Provider type (command, builtin, dummy)
+    /// Provider type (builtin, dummy)
     pub provider: Option<EmbeddingProviderType>,
-    /// Model identifier for the embedding provider
+    /// Model identifier for the embedding provider (legacy; ignored by builtin provider)
     pub model: Option<String>,
-    /// Command to execute for command provider
+    /// Command to execute for command provider (legacy; unsupported)
     pub command: Option<String>,
     /// Number of lines per chunk
     pub chunk_lines: Option<usize>,
@@ -412,11 +413,7 @@ impl Config {
         match self.embeddings.enabled() {
             EmbeddingEnabled::Off => false,
             EmbeddingEnabled::On => true,
-            EmbeddingEnabled::Auto => {
-                // Auto-detect: check if embedder command exists or builtin is available
-                // For now, default to false in auto mode until provider is verified
-                false
-            }
+            EmbeddingEnabled::Auto => true,
         }
     }
 }
