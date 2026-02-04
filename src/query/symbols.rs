@@ -13,8 +13,10 @@ use crate::indexer::scanner::{FileScanner, ScannedFile};
 use crate::parser::symbols::SymbolExtractor;
 use crate::query::index_filter::{find_files_with_symbol, read_scanned_files};
 use cgrep::config::Config;
-use cgrep::filters::{matches_file_type, CompiledGlob, matches_glob_compiled, should_exclude_compiled};
-use cgrep::output::{use_colors, colorize_path, colorize_line_num, colorize_kind, colorize_name};
+use cgrep::filters::{
+    matches_file_type, matches_glob_compiled, should_exclude_compiled, CompiledGlob,
+};
+use cgrep::output::{colorize_kind, colorize_line_num, colorize_name, colorize_path, use_colors};
 use cgrep::utils::get_root_with_index;
 
 /// Symbol result for JSON output
@@ -39,21 +41,21 @@ pub fn run(
 ) -> Result<()> {
     let start_time = Instant::now();
     let use_color = use_colors() && format == OutputFormat::Text;
-    
+
     // Load config for exclude patterns
     let config = Config::load();
-    
+
     // Precompile glob patterns for efficient repeated matching
     let compiled_glob = glob_pattern.and_then(CompiledGlob::new);
     let compiled_exclude = exclude_pattern.and_then(CompiledGlob::new);
-    
+
     // Compile config exclude patterns
     let config_exclude_patterns: Vec<CompiledGlob> = config
         .exclude_patterns
         .iter()
         .filter_map(|p| CompiledGlob::new(p.as_str()))
         .collect();
-    
+
     let root = get_root_with_index(std::env::current_dir()?);
     let extractor = SymbolExtractor::new();
     let name_lower = name.to_lowercase();
@@ -89,7 +91,10 @@ pub fn run(
             continue;
         }
         // Also check config exclude patterns
-        if config_exclude_patterns.iter().any(|p| should_exclude_compiled(&rel_path, Some(p))) {
+        if config_exclude_patterns
+            .iter()
+            .any(|p| should_exclude_compiled(&rel_path, Some(p)))
+        {
             continue;
         }
 
@@ -151,7 +156,7 @@ pub fn run(
                 } else {
                     println!("\nSearching for symbol: {}\n", name);
                 }
-                
+
                 for result in &results {
                     let kind_str = format!("[{}]", result.kind);
                     println!(
@@ -162,9 +167,13 @@ pub fn run(
                         colorize_line_num(result.line, use_color)
                     );
                 }
-                
+
                 if use_color {
-                    println!("\n{} Found {} symbols", "✓".green(), results.len().to_string().cyan());
+                    println!(
+                        "\n{} Found {} symbols",
+                        "✓".green(),
+                        results.len().to_string().cyan()
+                    );
                 } else {
                     println!("\nFound {} symbols", results.len());
                 }

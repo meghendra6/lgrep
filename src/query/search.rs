@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 use tantivy::{
     collector::TopDocs,
@@ -106,27 +107,20 @@ pub fn run(
     let compiled_glob = glob_pattern.and_then(CompiledGlob::new);
     let compiled_exclude = exclude_pattern.and_then(CompiledGlob::new);
 
-    let requested_root = path
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine current directory"))?;
+    let search_root = resolve_search_root(path)?;
 
     // Find index root (may be in parent directory)
-    let (root, index_path, using_parent) = match cgrep::utils::find_index_root(&requested_root) {
+    let (index_root, index_path, using_parent) = match cgrep::utils::find_index_root(&search_root) {
         Some(index_root) => (
             index_root.root.clone(),
             index_root.index_path,
             index_root.is_parent,
         ),
-        None => (
-            requested_root.clone(),
-            requested_root.join(INDEX_DIR),
-            false,
-        ),
+        None => (search_root.clone(), search_root.join(INDEX_DIR), false),
     };
 
     // Load config relative to the index root so running from subdirectories works.
-    let config = Config::load_for_dir(&root);
+    let config = Config::load_for_dir(&index_root);
     let effective_max_results = config.merge_max_results(Some(max_results));
     let config_exclude_patterns: Vec<CompiledGlob> = config
         .exclude_patterns
@@ -135,7 +129,7 @@ pub fn run(
         .collect();
 
     if using_parent {
-        eprintln!("Using index from: {}", root.display());
+        eprintln!("Using index from: {}", index_root.display());
     }
 
     let requested_mode = if no_index || regex {
@@ -167,7 +161,8 @@ pub fn run(
             // Use hybrid search
             hybrid_search(
                 query,
-                &root,
+                &index_root,
+                &search_root,
                 &config,
                 effective_max_results,
                 context,
@@ -185,7 +180,8 @@ pub fn run(
             if requested_mode == IndexMode::Index && index_path.exists() {
                 index_search(
                     query,
-                    &root,
+                    &index_root,
+                    &search_root,
                     effective_max_results,
                     context,
                     file_type,
@@ -203,7 +199,7 @@ pub fn run(
                 }
                 scan_search(
                     query,
-                    &root,
+                    &search_root,
                     effective_max_results,
                     context,
                     file_type,
@@ -417,18 +413,27 @@ fn get_context_lines(
     (before, after)
 }
 
-fn index_search(
+struct IndexCandidate {
+    stored_path: String,
+    full_path: PathBuf,
+    display_path: String,
+    score: f32,
+    snippet: String,
+    line: Option<usize>,
+}
+
+fn collect_index_candidates(
     query: &str,
-    root: &std::path::Path,
-    max_results: usize,
-    context: usize,
+    index_root: &Path,
+    search_root: &Path,
+    max_candidates: usize,
     file_type: Option<&str>,
     compiled_glob: Option<&CompiledGlob>,
     compiled_exclude: Option<&CompiledGlob>,
     config_exclude_patterns: &[CompiledGlob],
     fuzzy: bool,
-) -> Result<SearchOutcome> {
-    let index_path = root.join(INDEX_DIR);
+) -> Result<Vec<IndexCandidate>> {
+    let index_path = index_root.join(INDEX_DIR);
     if !index_path.exists() {
         return Err(IndexNotFoundError {
             index_path: index_path.display().to_string(),
@@ -477,15 +482,13 @@ fn index_search(
         Box::new(query_parser.parse_query(query)?)
     };
 
-    let fetch_limit = max_results * 5;
+    let fetch_limit = max_candidates.saturating_mul(5).max(1);
     let top_docs = searcher.search(&parsed_query, &TopDocs::with_limit(fetch_limit))?;
 
-    let mut files_with_matches: HashSet<String> = HashSet::new();
-    let mut total_matches = 0;
-    let mut results: Vec<SearchResult> = Vec::new();
+    let mut candidates: Vec<IndexCandidate> = Vec::new();
 
     for (score, doc_address) in &top_docs {
-        if results.len() >= max_results {
+        if candidates.len() >= max_candidates {
             break;
         }
 
@@ -495,24 +498,26 @@ fn index_search(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        if !matches_file_type(path_value, file_type) {
+        let full_path = resolve_full_path(path_value, index_root);
+        let Some(display_path) = scoped_display_path(&full_path, search_root) else {
+            continue;
+        };
+
+        if !matches_file_type(&display_path, file_type) {
             continue;
         }
-        if !matches_glob_compiled(path_value, compiled_glob) {
+        if !matches_glob_compiled(&display_path, compiled_glob) {
             continue;
         }
-        if should_exclude_compiled(path_value, compiled_exclude) {
+        if should_exclude_compiled(&display_path, compiled_exclude) {
             continue;
         }
         if config_exclude_patterns
             .iter()
-            .any(|p| should_exclude_compiled(path_value, Some(p)))
+            .any(|p| should_exclude_compiled(&display_path, Some(p)))
         {
             continue;
         }
-
-        files_with_matches.insert(path_value.to_string());
-        total_matches += 1;
 
         let content_value = doc
             .get_first(content_field)
@@ -527,17 +532,61 @@ fn index_search(
         let (snippet, line_num) = find_snippet_with_line(content_value, query, 150);
         let line_num = line_num.map(|l| l + line_offset.saturating_sub(1));
 
-        let (context_before, context_after) = if context > 0 && line_num.is_some() {
-            get_context_lines(&root.join(path_value), line_num.unwrap(), context)
+        candidates.push(IndexCandidate {
+            stored_path: path_value.to_string(),
+            full_path,
+            display_path,
+            score: *score,
+            snippet,
+            line: line_num,
+        });
+    }
+
+    Ok(candidates)
+}
+
+fn index_search(
+    query: &str,
+    index_root: &Path,
+    search_root: &Path,
+    max_results: usize,
+    context: usize,
+    file_type: Option<&str>,
+    compiled_glob: Option<&CompiledGlob>,
+    compiled_exclude: Option<&CompiledGlob>,
+    config_exclude_patterns: &[CompiledGlob],
+    fuzzy: bool,
+) -> Result<SearchOutcome> {
+    let candidates = collect_index_candidates(
+        query,
+        index_root,
+        search_root,
+        max_results,
+        file_type,
+        compiled_glob,
+        compiled_exclude,
+        config_exclude_patterns,
+        fuzzy,
+    )?;
+
+    let mut files_with_matches: HashSet<String> = HashSet::new();
+    let mut results: Vec<SearchResult> = Vec::new();
+
+    for candidate in candidates {
+        let (context_before, context_after) = if context > 0 && candidate.line.is_some() {
+            get_context_lines(&candidate.full_path, candidate.line.unwrap(), context)
         } else {
             (vec![], vec![])
         };
 
+        let display_path = candidate.display_path;
+        files_with_matches.insert(display_path.clone());
+
         results.push(SearchResult {
-            path: path_value.to_string(),
-            score: *score,
-            snippet,
-            line: line_num,
+            path: display_path,
+            score: candidate.score,
+            snippet: candidate.snippet,
+            line: candidate.line,
             context_before,
             context_after,
             text_score: None,
@@ -548,6 +597,8 @@ fn index_search(
             chunk_end: None,
         });
     }
+
+    let total_matches = results.len();
 
     Ok(SearchOutcome {
         results,
@@ -713,7 +764,8 @@ fn scan_search(
 /// Hybrid search combining BM25 with vector embeddings
 fn hybrid_search(
     query: &str,
-    root: &std::path::Path,
+    index_root: &Path,
+    search_root: &Path,
     config: &Config,
     max_results: usize,
     context: usize,
@@ -725,8 +777,8 @@ fn hybrid_search(
     use_cache: bool,
     cache_ttl_ms: u64,
 ) -> Result<SearchOutcome> {
-    let index_path = root.join(INDEX_DIR);
-    let embedding_db_path = root.join(".cgrep").join("embeddings.sqlite");
+    let index_path = index_root.join(INDEX_DIR);
+    let embedding_db_path = index_root.join(".cgrep").join("embeddings.sqlite");
 
     // Build cache key
     let cache_key = CacheKey {
@@ -740,41 +792,48 @@ fn hybrid_search(
         profile: None,
         index_hash: None,
         embedding_model: None,
+        search_root: Some(search_root.to_string_lossy().to_string()),
     };
 
     // Try cache
     if use_cache {
-        if let Ok(cache) = SearchCache::new(root, cache_ttl_ms) {
+        if let Ok(cache) = SearchCache::new(index_root, cache_ttl_ms) {
             if let Ok(Some(entry)) = cache.get::<Vec<HybridResult>>(&cache_key) {
                 // Return cached results
                 let results: Vec<SearchResult> = entry
                     .data
                     .iter()
-                    .map(|hr| SearchResult {
-                        path: hr.path.clone(),
-                        score: hr.score,
-                        snippet: hr.snippet.clone(),
-                        line: hr.line,
-                        context_before: vec![],
-                        context_after: vec![],
-                        text_score: Some(hr.text_score),
-                        vector_score: Some(hr.vector_score),
-                        hybrid_score: Some(hr.score),
-                        result_id: hr.result_id.clone(),
-                        chunk_start: hr.chunk_start,
-                        chunk_end: hr.chunk_end,
+                    .filter_map(|hr| {
+                        let full_path = resolve_full_path(&hr.path, index_root);
+                        let display_path = scoped_display_path(&full_path, search_root)?;
+                        Some(SearchResult {
+                            path: display_path,
+                            score: hr.score,
+                            snippet: hr.snippet.clone(),
+                            line: hr.line,
+                            context_before: vec![],
+                            context_after: vec![],
+                            text_score: Some(hr.text_score),
+                            vector_score: Some(hr.vector_score),
+                            hybrid_score: Some(hr.score),
+                            result_id: hr.result_id.clone(),
+                            chunk_start: hr.chunk_start,
+                            chunk_end: hr.chunk_end,
+                        })
                     })
                     .collect();
 
+                let files_with_matches = results
+                    .iter()
+                    .map(|r| r.path.clone())
+                    .collect::<HashSet<_>>()
+                    .len();
+                let total_matches = results.len();
+
                 return Ok(SearchOutcome {
                     results,
-                    files_with_matches: entry
-                        .data
-                        .iter()
-                        .map(|r| r.path.clone())
-                        .collect::<HashSet<_>>()
-                        .len(),
-                    total_matches: entry.data.len(),
+                    files_with_matches,
+                    total_matches,
                     mode: IndexMode::Index,
                 });
             }
@@ -795,11 +854,11 @@ fn hybrid_search(
         ));
     }
 
-    let bm25_outcome = index_search(
+    let bm25_candidates = collect_index_candidates(
         query,
-        root,
+        index_root,
+        search_root,
         max_results * 3, // Get more for reranking
-        0,               // No context yet
         file_type,
         compiled_glob,
         compiled_exclude,
@@ -808,16 +867,15 @@ fn hybrid_search(
     )?;
 
     // Convert to BM25Result format
-    let bm25_results: Vec<BM25Result> = bm25_outcome
-        .results
-        .iter()
-        .map(|r| BM25Result {
-            path: r.path.clone(),
-            score: r.score,
-            snippet: r.snippet.clone(),
-            line: r.line,
-            chunk_start: r.line.map(|l| l as u32),
-            chunk_end: r.line.map(|l| l as u32),
+    let bm25_results: Vec<BM25Result> = bm25_candidates
+        .into_iter()
+        .map(|candidate| BM25Result {
+            path: candidate.stored_path,
+            score: candidate.score,
+            snippet: candidate.snippet,
+            line: candidate.line,
+            chunk_start: candidate.line.map(|l| l as u32),
+            chunk_end: candidate.line.map(|l| l as u32),
         })
         .collect();
 
@@ -942,34 +1000,39 @@ fn hybrid_search(
     let mut files_with_matches: HashSet<String> = HashSet::new();
 
     for hr in hybrid_results.iter().take(max_results) {
+        let full_path = resolve_full_path(&hr.path, index_root);
+        let Some(display_path) = scoped_display_path(&full_path, search_root) else {
+            continue;
+        };
+
         // Apply filters
-        if !matches_file_type(&hr.path, file_type) {
+        if !matches_file_type(&display_path, file_type) {
             continue;
         }
-        if !matches_glob_compiled(&hr.path, compiled_glob) {
+        if !matches_glob_compiled(&display_path, compiled_glob) {
             continue;
         }
-        if should_exclude_compiled(&hr.path, compiled_exclude) {
+        if should_exclude_compiled(&display_path, compiled_exclude) {
             continue;
         }
         if config_exclude_patterns
             .iter()
-            .any(|p| should_exclude_compiled(&hr.path, Some(p)))
+            .any(|p| should_exclude_compiled(&display_path, Some(p)))
         {
             continue;
         }
 
-        files_with_matches.insert(hr.path.clone());
+        files_with_matches.insert(display_path.clone());
 
         // Get context lines if needed
         let (context_before, context_after) = if context > 0 && hr.line.is_some() {
-            get_context_lines(&root.join(&hr.path), hr.line.unwrap(), context)
+            get_context_lines(&full_path, hr.line.unwrap(), context)
         } else {
             (vec![], vec![])
         };
 
         results.push(SearchResult {
-            path: hr.path.clone(),
+            path: display_path,
             score: hr.score,
             snippet: hr.snippet.clone(),
             line: hr.line,
@@ -986,7 +1049,7 @@ fn hybrid_search(
 
     // Store in cache
     if use_cache {
-        if let Ok(cache) = SearchCache::new(root, cache_ttl_ms) {
+        if let Ok(cache) = SearchCache::new(index_root, cache_ttl_ms) {
             let to_cache: Vec<HybridResult> =
                 hybrid_results.into_iter().take(max_results).collect();
             let _ = cache.put(&cache_key, to_cache);
@@ -1100,9 +1163,60 @@ fn find_snippet_with_line(content: &str, query: &str, max_len: usize) -> (String
     (snippet, None)
 }
 
+fn resolve_search_root(path: Option<&str>) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("Cannot determine current directory")?;
+    let requested = path.map(PathBuf::from).unwrap_or_else(|| cwd.clone());
+    let absolute = if requested.is_absolute() {
+        requested
+    } else {
+        cwd.join(requested)
+    };
+    Ok(normalize_path(&absolute))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut cleaned = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cleaned.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                cleaned.push(component.as_os_str());
+            }
+        }
+    }
+
+    if cleaned.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        cleaned
+    }
+}
+
+fn resolve_full_path(path_value: &str, index_root: &Path) -> PathBuf {
+    let path = Path::new(path_value);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        index_root.join(path)
+    }
+}
+
+fn scoped_display_path(full_path: &Path, search_root: &Path) -> Option<String> {
+    full_path
+        .strip_prefix(search_root)
+        .ok()
+        .map(|rel| rel.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indexer::index::DEFAULT_WRITER_BUDGET_BYTES;
+    use crate::indexer::IndexBuilder;
     use tempfile::TempDir;
 
     #[test]
@@ -1155,5 +1269,29 @@ mod tests {
         assert_eq!(outcome.results[0].path, "numbers.txt");
         assert_eq!(outcome.results[0].line, Some(1));
         assert_eq!(outcome.results[1].line, Some(3));
+    }
+
+    #[test]
+    fn index_search_scopes_to_search_root_and_relativizes_paths() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        let root_file = root.join("root.rs");
+        let subdir = root.join("src");
+        let sub_file = subdir.join("sub.rs");
+
+        std::fs::create_dir_all(&subdir).expect("create subdir");
+        std::fs::write(&root_file, "needle in root").expect("write root");
+        std::fs::write(&sub_file, "needle in sub").expect("write sub");
+
+        let builder = IndexBuilder::new(root).expect("builder");
+        builder
+            .build(false, DEFAULT_WRITER_BUDGET_BYTES)
+            .expect("build");
+
+        let outcome = index_search("needle", root, &subdir, 10, 0, None, None, None, &[], false)
+            .expect("index search");
+
+        assert_eq!(outcome.results.len(), 1);
+        assert_eq!(outcome.results[0].path, "sub.rs");
     }
 }

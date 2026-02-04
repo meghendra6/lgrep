@@ -21,9 +21,9 @@ impl CompiledGlob {
         // - `*` matches any characters except `/`
         let regex_pattern = pattern
             .replace(".", "\\.")
-            .replace("**/", "{{DOUBLESTARSLASH}}")  // Match zero or more dirs
-            .replace("/**", "{{SLASHDOUBLESTAR}}")  // Match zero or more suffix
-            .replace("**", ".*")                     // Standalone ** matches anything
+            .replace("**/", "{{DOUBLESTARSLASH}}") // Match zero or more dirs
+            .replace("/**", "{{SLASHDOUBLESTAR}}") // Match zero or more suffix
+            .replace("**", ".*") // Standalone ** matches anything
             .replace("*", "[^/]*")
             .replace("{{DOUBLESTARSLASH}}", "(.*/)?")
             .replace("{{SLASHDOUBLESTAR}}", "(/.*)?");
@@ -82,7 +82,9 @@ pub fn matches_glob_compiled(path: &str, glob: Option<&CompiledGlob>) -> bool {
 /// Check if file matches glob pattern (simple implementation)
 /// Prefer using CompiledGlob for repeated matching in hot paths
 pub fn matches_glob(path: &str, glob_pattern: Option<&str>) -> bool {
-    let Some(pattern) = glob_pattern else { return true };
+    let Some(pattern) = glob_pattern else {
+        return true;
+    };
 
     let regex_pattern = pattern
         .replace(".", "\\.")
@@ -106,7 +108,9 @@ pub fn should_exclude_compiled(path: &str, exclude: Option<&CompiledGlob>) -> bo
 /// Check if file should be excluded
 /// Prefer using CompiledGlob for repeated matching in hot paths
 pub fn should_exclude(path: &str, exclude_pattern: Option<&str>) -> bool {
-    let Some(pattern) = exclude_pattern else { return false };
+    let Some(pattern) = exclude_pattern else {
+        return false;
+    };
     matches_glob(path, Some(pattern))
 }
 

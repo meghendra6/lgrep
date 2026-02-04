@@ -45,30 +45,30 @@ fn get_claude_md_path() -> Result<PathBuf> {
 
 pub fn install() -> Result<()> {
     let path = get_claude_md_path()?;
-    
-    let added = append_if_not_present(&path, SKILL_CONTENT)
-        .context("Failed to update CLAUDE.md")?;
-    
+
+    let added =
+        append_if_not_present(&path, SKILL_CONTENT).context("Failed to update CLAUDE.md")?;
+
     if added {
         print_install_success("Claude Code");
     } else {
         println!("cgrep is already installed in Claude Code");
     }
-    
+
     Ok(())
 }
 
 pub fn uninstall() -> Result<()> {
     let path = get_claude_md_path()?;
-    
+
     if !path.exists() {
         println!("Claude Code CLAUDE.md not found");
         return Ok(());
     }
-    
+
     let content = std::fs::read_to_string(&path)?;
     let skill_trimmed = SKILL_CONTENT.trim();
-    
+
     if content.contains(skill_trimmed) {
         let updated = content.replace(skill_trimmed, "");
         // Clean up extra blank lines
@@ -78,7 +78,7 @@ pub fn uninstall() -> Result<()> {
             .join("\n")
             .trim()
             .to_string();
-        
+
         if cleaned.is_empty() {
             std::fs::remove_file(&path)?;
         } else {
@@ -88,6 +88,6 @@ pub fn uninstall() -> Result<()> {
     } else {
         println!("cgrep is not installed in Claude Code");
     }
-    
+
     Ok(())
 }

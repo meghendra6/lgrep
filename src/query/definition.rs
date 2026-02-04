@@ -76,7 +76,11 @@ pub fn run(name: &str, format: OutputFormat) -> Result<()> {
     let results: Vec<DefinitionResult> = matches
         .iter()
         .map(|(path, symbol)| {
-            let rel_path = path.strip_prefix(&root).unwrap_or(path).display().to_string();
+            let rel_path = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
             DefinitionResult {
                 name: symbol.name.clone(),
                 kind: symbol.kind.to_string(),

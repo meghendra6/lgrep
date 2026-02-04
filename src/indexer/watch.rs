@@ -3,12 +3,14 @@
 //! File watcher for incremental index updates with debouncing
 
 use anyhow::Result;
-use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher, Event};
+use colored::Colorize;
+use notify::{
+    Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher,
+};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::time::{Duration, Instant};
-use colored::Colorize;
 
 use crate::indexer::IndexBuilder;
 
@@ -47,20 +49,25 @@ impl Watcher {
     pub fn watch(&self) -> Result<()> {
         let (tx, rx) = channel();
 
-        let config = NotifyConfig::default()
-            .with_poll_interval(Duration::from_secs(2));
+        let config = NotifyConfig::default().with_poll_interval(Duration::from_secs(2));
 
         let mut watcher = RecommendedWatcher::new(tx, config)?;
         watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
-        println!("{} Watching {} for changes...", "👁".cyan(), self.root.display());
-        println!("  Debounce: {}s, Min interval: {}s", 
-                 self.debounce_duration.as_secs(),
-                 self.min_reindex_interval.as_secs());
+        println!(
+            "{} Watching {} for changes...",
+            "👁".cyan(),
+            self.root.display()
+        );
+        println!(
+            "  Debounce: {}s, Min interval: {}s",
+            self.debounce_duration.as_secs(),
+            self.min_reindex_interval.as_secs()
+        );
         println!("Press Ctrl+C to stop\n");
 
         let builder = IndexBuilder::new(&self.root)?;
-        
+
         // Track pending changes and last reindex time
         let mut pending_paths: HashSet<PathBuf> = HashSet::new();
         let mut last_event_time: Option<Instant> = None;
@@ -117,19 +124,29 @@ impl Watcher {
 
                 if should_reindex && can_reindex {
                     let num_changes = pending_paths.len();
-                    println!("{} {} file(s) changed, reindexing...", "🔄".yellow(), num_changes);
-                    
+                    println!(
+                        "{} {} file(s) changed, reindexing...",
+                        "🔄".yellow(),
+                        num_changes
+                    );
+
                     // Clear pending before reindex to capture new events during reindex
                     pending_paths.clear();
                     last_event_time = None;
-                    
+
                     let start = Instant::now();
-                    if let Err(e) = builder.build(false, crate::indexer::index::DEFAULT_WRITER_BUDGET_BYTES) {
+                    if let Err(e) =
+                        builder.build(false, crate::indexer::index::DEFAULT_WRITER_BUDGET_BYTES)
+                    {
                         eprintln!("{} Reindex failed: {}", "✗".red(), e);
                     } else {
-                        println!("{} Reindex complete in {:.1}s", "✓".green(), start.elapsed().as_secs_f64());
+                        println!(
+                            "{} Reindex complete in {:.1}s",
+                            "✓".green(),
+                            start.elapsed().as_secs_f64()
+                        );
                     }
-                    
+
                     last_reindex_time = Some(Instant::now());
                 }
             }
@@ -147,7 +164,8 @@ fn should_reindex(event: &Event) -> bool {
 
 /// Run the watch command
 pub fn run(path: Option<&str>, debounce_secs: Option<u64>) -> Result<()> {
-    let root = path.map(PathBuf::from)
+    let root = path
+        .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .ok_or_else(|| anyhow::anyhow!("Cannot determine current directory"))?;
 

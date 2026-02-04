@@ -75,11 +75,7 @@ pub fn run(name: &str, path: Option<&str>, max_results: usize, format: OutputFor
         }
         OutputFormat::Text => {
             if results.is_empty() {
-                println!(
-                    "{} No references found for: {}",
-                    "✗".red(),
-                    name.yellow()
-                );
+                println!("{} No references found for: {}", "✗".red(), name.yellow());
             } else {
                 println!(
                     "\n{} Finding references of: {}\n",

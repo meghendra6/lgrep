@@ -22,14 +22,14 @@ pub struct IndexRoot {
 /// Returns None if no .cgrep directory is found.
 pub fn find_index_root(start: impl AsRef<Path>) -> Option<IndexRoot> {
     let mut current = start.as_ref().to_path_buf();
-    
+
     // Canonicalize to handle relative paths
     if let Ok(canonical) = current.canonicalize() {
         current = canonical;
     }
-    
+
     let original = current.clone();
-    
+
     loop {
         let index_path = current.join(INDEX_DIR);
         if index_path.exists() && index_path.is_dir() {
@@ -39,12 +39,12 @@ pub fn find_index_root(start: impl AsRef<Path>) -> Option<IndexRoot> {
                 is_parent: current != original,
             });
         }
-        
+
         if !current.pop() {
             break;
         }
     }
-    
+
     None
 }
 
@@ -77,7 +77,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let index_dir = dir.path().join(INDEX_DIR);
         fs::create_dir(&index_dir).unwrap();
-        
+
         let result = find_index_root(dir.path()).unwrap();
         assert_eq!(result.root, dir.path().canonicalize().unwrap());
         assert!(!result.is_parent);
@@ -88,10 +88,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let index_dir = dir.path().join(INDEX_DIR);
         fs::create_dir(&index_dir).unwrap();
-        
+
         let subdir = dir.path().join("subdir");
         fs::create_dir(&subdir).unwrap();
-        
+
         let result = find_index_root(&subdir).unwrap();
         assert_eq!(result.root, dir.path().canonicalize().unwrap());
         assert!(result.is_parent);

@@ -41,19 +41,28 @@ pub fn run(file: &str, format: OutputFormat) -> Result<()> {
     // Patterns to match imports
     let patterns = vec![
         // JavaScript/TypeScript: import ... from 'path' or require('path')
-        format!(r#"(?:import|from|require)\s*[\(\s]?['"](?:[./]*{})['"]"#, regex::escape(target_stem)),
+        format!(
+            r#"(?:import|from|require)\s*[\(\s]?['"](?:[./]*{})['"]"#,
+            regex::escape(target_stem)
+        ),
         // Python: import path or from path import
-        format!(r"(?:import|from)\s+{}(?:\s|$|,)", regex::escape(target_stem)),
+        format!(
+            r"(?:import|from)\s+{}(?:\s|$|,)",
+            regex::escape(target_stem)
+        ),
         // Rust: use path or mod path
-        format!(r"(?:use|mod)\s+(?:crate::)?{}(?:::|;|\s)", regex::escape(target_stem)),
+        format!(
+            r"(?:use|mod)\s+(?:crate::)?{}(?:::|;|\s)",
+            regex::escape(target_stem)
+        ),
         // Go: import "path"
-        format!(r#"import\s+[\(\s]*['"](?:[./]*{})['"]"#, regex::escape(target_stem)),
+        format!(
+            r#"import\s+[\(\s]*['"](?:[./]*{})['"]"#,
+            regex::escape(target_stem)
+        ),
     ];
 
-    let regexes: Vec<Regex> = patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect();
+    let regexes: Vec<Regex> = patterns.iter().filter_map(|p| Regex::new(p).ok()).collect();
 
     let mut results: Vec<DependentResult> = Vec::new();
 
@@ -88,11 +97,7 @@ pub fn run(file: &str, format: OutputFormat) -> Result<()> {
         }
         OutputFormat::Text => {
             if results.is_empty() {
-                println!(
-                    "{} No files depend on: {}",
-                    "✗".red(),
-                    file.yellow()
-                );
+                println!("{} No files depend on: {}", "✗".red(), file.yellow());
             } else {
                 println!(
                     "\n{} Finding files that depend on: {}\n",

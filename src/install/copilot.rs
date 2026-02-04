@@ -115,7 +115,10 @@ pub fn install() -> Result<()> {
         .context("Failed to write cgrep instructions")?;
 
     if created {
-        println!("Created cgrep instructions at {:?}", cgrep_instructions_path);
+        println!(
+            "Created cgrep instructions at {:?}",
+            cgrep_instructions_path
+        );
     } else {
         println!("cgrep instructions already up to date");
     }
