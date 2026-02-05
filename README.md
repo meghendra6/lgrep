@@ -47,7 +47,7 @@ cgrep dependents src/auth.rs
 - `cgrep symbols`, `definition`, `callers`, `references` when you know the symbol name.
 - `cgrep dependents` to find files importing a given file.
 - `cgrep watch` to keep the index fresh while you code.
-- `--semantic` or `--hybrid` when embeddings are configured and you want semantic ranking.
+- `cgrep search --semantic` or `cgrep search --hybrid` when embeddings are configured and you want semantic ranking.
 
 ## Commands
 
