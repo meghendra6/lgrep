@@ -168,15 +168,14 @@ Global flag:
 ```
 
 - `text`: human-readable output
-- `json`: array of results (minimal fields)
+- `json`: array of results
 - `json2`: currently identical to `json` (reserved for structured output)
 
-Search result JSON fields (minimal):
+Search result JSON fields:
 ```
 path, snippet, line
 context_before, context_after
 ```
-Context fields appear only when `-C/--context` is used and the context is non-empty.
 
 ## Embeddings (optional)
 
