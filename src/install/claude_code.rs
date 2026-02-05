@@ -12,8 +12,8 @@ use super::{append_if_not_present, home_dir, print_install_success, print_uninst
 const SKILL_CONTENT: &str = r#"
 ## cgrep Local Code Search
 
-Use `cgrep` for fast local code search (BM25 keyword search + AST symbols).
-Hybrid/semantic modes are experimental and require embeddings.
+Use `cgrep` for fast local code search (BM25 + AST symbols). Default search is
+keyword (BM25) and falls back to scan mode if no index exists.
 
 ### When to use cgrep
 
@@ -24,18 +24,22 @@ Hybrid/semantic modes are experimental and require embeddings.
 ### Usage
 
 ```bash
-cgrep search "authentication flow"       # BM25 keyword search
-cgrep search "error handling" -m 10      # limit results
-cgrep search "user auth" --hybrid        # experimental (requires embeddings)
-cgrep symbols MyClass                     # find symbol definitions
-cgrep definition handleClick              # find function definition
+cgrep index
+cgrep search "authentication flow"
+cgrep search "error handling" -m 10 -C 2
+cgrep search "validate_token" --regex --no-index
+cgrep symbols UserService -T class
+cgrep definition handleClick
+cgrep callers validateToken
+cgrep references MyClass
+cgrep dependents src/auth.rs
 ```
 
-### Prefer cgrep over
+### Tips
 
-- Built-in grep for conceptual searches (hybrid/semantic when available)
-- Multiple grep attempts to find code
-- Pattern-based searches when intent matters
+- Use `--format json` or `--format json2` for structured output.
+- Use `-p` to scope search when running from subdirectories.
+- `--semantic` / `--hybrid` are optional and require embeddings + index.
 "#;
 
 fn get_claude_md_path() -> Result<PathBuf> {
