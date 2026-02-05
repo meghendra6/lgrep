@@ -18,32 +18,36 @@ license: Apache 2.0
 
 ## When to use this skill
 
-Whenever you need to search local files. Use cgrep instead of grep.
+Use cgrep for any local code search or symbol lookup. Prefer it over grep.
 
 ## How to use this skill
 
-Use `cgrep search` to search local files. Keyword search is default; hybrid/semantic
-are experimental and require embeddings.
+Default is keyword search (BM25). If an index exists it is used; otherwise it
+falls back to scan mode. Use `cgrep index` for repeated searches.
 
 ### Usage Examples
 
 ```bash
-cgrep search "What code parsers are available?"
-cgrep search "How are chunks defined?" -m 10
-cgrep search "user authentication" --hybrid
-cgrep symbols MyFunction -t function
-cgrep definition MyClass
-cgrep callers process_request
+cgrep index
+cgrep search "authentication flow"
+cgrep search "auth middleware" -C 2 -p src/
+cgrep search "validate_token" --regex --no-index
+cgrep symbols UserService -T class
+cgrep definition handleAuth
+cgrep callers validateToken
+cgrep references MyClass
+cgrep dependents src/auth.rs
 ```
 
 ### Options
 
-- `-m, --max-results <n>` - Limit number of results (default: 20)
-- `-C, --context <n>` - Context lines around matches (default: 0)
 - `-p, --path <path>` - Search in specific directory
-- `--hybrid` - Use hybrid search (BM25 + vector)
-- `--format json2` - Same as json for now (reserved for structured output)
-- `--agent-cache` - Enable result caching
+- `-C, --context <n>` - Context lines around matches (default: 0)
+- `-m, --max-results <n>` - Limit number of results (default: 20)
+- `--no-index` / `--regex` - Force scan mode or regex search
+- `--format json|json2` - Structured output (json2 matches json for now)
+- `--semantic` / `--hybrid` - Optional; requires embeddings + index
+- `--agent-cache` / `--cache-ttl` - Cache hybrid/semantic sessions
 "#;
 
 fn get_agents_md_path() -> Result<PathBuf> {

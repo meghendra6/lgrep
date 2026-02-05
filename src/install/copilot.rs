@@ -28,7 +28,7 @@ When you need to search for code or files locally, **use cgrep instead of built-
 - **USE**: `cgrep search "natural language query"` for keyword search (BM25)
 - **USE**: `cgrep symbols <name>` for symbol search
 - **USE**: `cgrep definition <name>` for finding definitions
-- **USE**: `--format json` for JSON output (json2 is reserved and currently the same as json)
+- **USE**: `--format json` or `--format json2` for structured output
 
 ## When to Use cgrep
 
@@ -43,19 +43,14 @@ Use cgrep **IMMEDIATELY** when:
 ## Usage Examples
 
 ```bash
-# Keyword search (BM25)
+cgrep index
 cgrep search "authentication flow implementation"
-cgrep search "error handling patterns" -p src/
-
-# Hybrid search (experimental; requires embeddings)
-cgrep search "user validation" --hybrid
-
-# Symbol search  
-cgrep symbols handleAuth -t function
+cgrep search "error handling patterns" -p src/ -C 2
+cgrep search "validate_token" --regex --no-index
+cgrep symbols handleAuth -T function
 cgrep definition UserService
-
-# Dependency tracking
 cgrep callers process_request
+cgrep references MyClass
 cgrep dependents src/auth.rs
 ```
 
@@ -66,6 +61,9 @@ cgrep dependents src/auth.rs
 | `-m, --max-results <n>` | Limit number of results (default: 20) |
 | `-C, --context <n>` | Context lines (default: 0) |
 | `-p, --path <path>` | Search in specific directory |
+| `--no-index` / `--regex` | Scan mode and regex search |
+| `--format json|json2` | Structured output |
+| `--semantic` / `--hybrid` | Optional; requires embeddings + index |
 
 ## Best Practices
 
@@ -73,15 +71,17 @@ cgrep dependents src/auth.rs
 
 - Use natural language queries: `cgrep search "How are database connections managed?"`
 - Specify subdirectories for focused search: `cgrep search "validation logic" -p src/lib/`
+- Run `cgrep index` for repeated searches and large repos
+- Use `--regex --no-index` for regex-only scans
 
 ### Don't
 
 - Use single-word queries: `cgrep search "parser"` (too vague)
-- Indexing: `cgrep index` gives BM25 results, but keyword search can fall back to scan mode
+- Fall back to grep when cgrep can answer the question
 
 ## Keywords
 
-code search, grep, search, find code, file search, codebase search, hybrid search
+code search, grep, search, find code, file search, codebase search
 "#;
 
 const COPILOT_INSTRUCTIONS_APPEND: &str = r#"
@@ -91,10 +91,10 @@ const COPILOT_INSTRUCTIONS_APPEND: &str = r#"
 This project uses **cgrep** for local code search. When searching for code or content:
 
 1. Use `cgrep search "natural language query"` instead of grep-based searches
-2. For symbol lookup: `cgrep symbols <name>`
+2. For symbol lookup: `cgrep symbols <name>` (use `-T` for symbol kind)
 3. For definitions: `cgrep definition <name>`
-4. Use `--hybrid` for combined keyword + semantic search (experimental; requires embeddings)
-5. Use `--format json` for machine-readable output (json2 is reserved)
+4. Use `--format json` or `--format json2` for machine-readable output
+5. Optional: `--semantic` / `--hybrid` when embeddings + index are available
 
 cgrep uses tantivy + tree-sitter for fast offline code search.
 "#;

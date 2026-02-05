@@ -25,22 +25,32 @@ Whenever you need to search local files. Use cgrep instead of grep.
 
 ## How to use this skill
 
-Use \`cgrep search\` to search local files. Keyword search is default; hybrid/semantic
-are experimental and require embeddings.
+Default is keyword search (BM25). If an index exists it is used; otherwise it
+falls back to scan mode. Use \`cgrep index\` for repeated searches.
 
 ### Do
 
 \`\`\`bash
-cgrep search "What code parsers are available?"
-cgrep search "How are chunks defined?" -m 10
-cgrep search "user auth" --hybrid  # experimental; requires embeddings
-cgrep symbols MyFunction -t function
+cgrep index
+cgrep search "authentication flow"
+cgrep search "auth middleware" -C 2 -p src/
+cgrep search "validate_token" --regex --no-index
+cgrep symbols UserService -T class
+cgrep definition handleAuth
 \`\`\`
+
+### Options
+
+- \`-p, --path <path>\` - Scope search to a directory
+- \`-C, --context <n>\` - Context lines
+- \`--no-index\` / \`--regex\` - Scan mode or regex search
+- \`--format json|json2\` - Structured output
+- \`--semantic\` / \`--hybrid\` - Optional; requires embeddings + index
 
 ### Don't
 
 \`\`\`bash
-cgrep search "parser"  # Too vague
+cgrep search "parser"
 \`\`\`
 `
 
