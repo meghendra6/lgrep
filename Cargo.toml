@@ -78,7 +78,10 @@ tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 
-[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+fastembed = { version = "5.8.1", default-features = false, features = ["hf-hub-native-tls", "ort-load-dynamic"] }
+
+[target.'cfg(not(any(all(target_os = "linux", target_env = "gnu"), all(target_os = "macos", target_arch = "x86_64"))))'.dependencies]
 fastembed = "5.8.1"
 
 [profile.release]

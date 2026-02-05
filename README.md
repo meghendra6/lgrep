@@ -216,6 +216,11 @@ symbol_max_chars = 1200
 Note: the builtin FastEmbed provider is not available on `x86_64-apple-darwin` builds.
 Use `provider = "command"` or `provider = "dummy"` on that target.
 
+Linux note: the builtin provider uses a dynamically loaded ONNX Runtime library.
+Install a compatible `libonnxruntime` and set `ORT_DYLIB_PATH` (or ensure it is
+discoverable via system library paths/`LD_LIBRARY_PATH`), or use
+`provider = "command"` / `provider = "dummy"`.
+
 For the builtin provider, you can tune FastEmbed via environment variables:
 ```
 FASTEMBED_MODEL=minilm
