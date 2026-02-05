@@ -1,35 +1,30 @@
 # cgrep
 
 Local code search with BM25 ranking and AST-aware symbols. Fully local, single
-binary. Includes scan mode fallback and experimental hybrid/semantic search.
+binary. Includes scan mode fallback and optional hybrid/semantic search.
 
 ## Why cgrep
 - Fast BM25 index (Tantivy)
 - AST-aware symbol lookup (tree-sitter)
-- Respects .gitignore (ignore crate)
 - Single binary, no cloud dependencies
 - JSON output for automation and agents
 - Scan mode with regex when you do not want to index
 
-## Install
-
-### From source
+## Quick install
 ```bash
+cargo install --path .
+
+# or build from source:
 cargo build --release
 cp target/release/cgrep ~/.local/bin/
 ```
 
-### With cargo
-```bash
-cargo install --path .
-```
-
 ## Quick start
 ```bash
-# Build the search index
+# Build the BM25 index (embeddings are off by default)
 cgrep index
 
-# Full-text search (BM25)
+# Full-text search
 cgrep search "authentication flow"
 
 # Search with context and file type filter
@@ -45,16 +40,24 @@ cgrep references MyClass
 cgrep dependents src/auth.rs
 ```
 
+## When to use what
+- `cgrep index` then `cgrep search` for repeated searches or large repos.
+- `cgrep search --no-index` for one-off searches or when you do not want an index.
+- `cgrep search --regex` for regex-only scans.
+- `cgrep symbols`, `definition`, `callers`, `references` when you know the symbol name.
+- `cgrep dependents` to find files importing a given file.
+- `cgrep watch` to keep the index fresh while you code.
+
 ## Commands
 
 | Command | Description |
 |--------|-------------|
-| `cgrep search <query>` | Full-text search (BM25), or hybrid/semantic if enabled |
+| `cgrep search <query>` (`s`) | Full-text search (BM25), or hybrid/semantic if enabled |
 | `cgrep symbols <name>` | Search symbols by name |
-| `cgrep definition <name>` | Find symbol definition location |
+| `cgrep definition <name>` (`def`) | Find symbol definition location |
 | `cgrep callers <function>` | Find callers of a function |
-| `cgrep references <name>` | Find symbol references |
-| `cgrep dependents <file>` | Find files that depend on a file |
+| `cgrep references <name>` (`refs`) | Find symbol references |
+| `cgrep dependents <file>` (`deps`) | Find files that depend on a file |
 | `cgrep index` | Build or rebuild the search index |
 | `cgrep watch` | Watch for file changes and update index |
 | `cgrep completions <shell>` | Generate shell completions |
