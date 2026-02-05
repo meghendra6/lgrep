@@ -213,6 +213,9 @@ symbol_max_chars = 1200
 `provider = "dummy"` is intended for tests/dev only (returns zero vectors).
 `chunk_lines` and `chunk_overlap` are deprecated and ignored (embeddings are symbol-level).
 
+Note: the builtin FastEmbed provider is not available on `x86_64-apple-darwin` builds.
+Use `provider = "command"` or `provider = "dummy"` on that target.
+
 For the builtin provider, you can tune FastEmbed via environment variables:
 ```
 FASTEMBED_MODEL=minilm

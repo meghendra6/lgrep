@@ -5,6 +5,7 @@
 //! This module provides a fastembed-based provider optimized for CPU throughput.
 
 use anyhow::{bail, Context, Result};
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use serde_json::Value;
 use std::borrow::Cow;
@@ -17,6 +18,21 @@ const DEFAULT_FASTEMBED_BATCH_SIZE: usize = 512;
 const MAX_FASTEMBED_BATCH_SIZE: usize = 1024;
 const DEFAULT_FASTEMBED_MAX_CHARS: usize = 2000;
 const DEFAULT_COMMAND_BATCH_SIZE: usize = 64;
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[derive(Debug, Clone)]
+pub enum EmbeddingModel {
+    AllMiniLML6V2,
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+impl std::fmt::Display for EmbeddingModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EmbeddingModel::AllMiniLML6V2 => write!(f, "all-MiniLM-L6-v2"),
+        }
+    }
+}
 
 /// Configuration for the embedding provider.
 #[derive(Debug, Clone)]
@@ -97,12 +113,14 @@ pub trait EmbeddingProvider: Send {
 }
 
 /// FastEmbed provider using sentence-transformers/all-MiniLM-L6-v2.
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub struct FastEmbedder {
     embedder: TextEmbedding,
     config: EmbeddingProviderConfig,
     model_id: String,
 }
 
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 impl FastEmbedder {
     pub fn new(config: EmbeddingProviderConfig) -> Result<Self> {
         let model = config.model.clone();
@@ -123,6 +141,7 @@ impl FastEmbedder {
     }
 }
 
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 impl EmbeddingProvider for FastEmbedder {
     fn model_id(&self) -> &str {
         &self.model_id
@@ -149,6 +168,41 @@ impl EmbeddingProvider for FastEmbedder {
         }
 
         Ok(embeddings)
+    }
+}
+
+/// FastEmbed provider stub for macOS x86_64 (fastembed backend unavailable).
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub struct FastEmbedder;
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+impl FastEmbedder {
+    pub fn new(_config: EmbeddingProviderConfig) -> Result<Self> {
+        bail!(
+            "FastEmbed backend is not available on target x86_64-apple-darwin. \
+Use embeddings.provider=command/dummy or run with --embeddings off."
+        )
+    }
+
+    pub fn from_env() -> Result<Self> {
+        Self::new(EmbeddingProviderConfig::from_env()?)
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+impl EmbeddingProvider for FastEmbedder {
+    fn model_id(&self) -> &str {
+        "unavailable"
+    }
+
+    fn batch_size(&self) -> usize {
+        DEFAULT_FASTEMBED_BATCH_SIZE
+    }
+
+    fn embed_texts(&mut self, _texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        bail!(
+            "FastEmbed backend is not available on target x86_64-apple-darwin."
+        )
     }
 }
 
