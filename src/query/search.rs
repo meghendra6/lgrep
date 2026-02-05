@@ -39,7 +39,7 @@ use cgrep::output::{
 use cgrep::utils::INDEX_DIR;
 const DEFAULT_CACHE_TTL_MS: u64 = 600_000; // 10 minutes
 
-/// Search result for JSON output
+/// Search result for internal use and text output
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub path: String,
@@ -66,6 +66,39 @@ pub struct SearchResult {
     /// Symbol end line (for semantic/hybrid)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_end: Option<u32>,
+}
+
+/// Minimal search result for JSON output
+#[derive(Debug, Serialize)]
+struct SearchResultJson<'a> {
+    path: &'a str,
+    snippet: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_before: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_after: Option<&'a [String]>,
+}
+
+impl<'a> SearchResultJson<'a> {
+    fn from_result(result: &'a SearchResult) -> Self {
+        Self {
+            path: result.path.as_str(),
+            snippet: result.snippet.as_str(),
+            line: result.line,
+            context_before: if result.context_before.is_empty() {
+                None
+            } else {
+                Some(result.context_before.as_slice())
+            },
+            context_after: if result.context_after.is_empty() {
+                None
+            } else {
+                Some(result.context_after.as_slice())
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,7 +252,12 @@ pub fn run(
     // Output based on format
     match format {
         OutputFormat::Json | OutputFormat::Json2 => {
-            println!("{}", serde_json::to_string_pretty(&outcome.results)?);
+            let json_results: Vec<SearchResultJson<'_>> = outcome
+                .results
+                .iter()
+                .map(SearchResultJson::from_result)
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_results)?);
         }
         OutputFormat::Text => {
             if outcome.results.is_empty() {

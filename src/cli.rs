@@ -26,7 +26,7 @@ pub struct Cli {
 pub enum OutputFormat {
     Text,
     Json,
-    /// Structured JSON for AI agents (includes metadata)
+    /// Structured JSON for AI agents (currently identical to json)
     Json2,
 }
 

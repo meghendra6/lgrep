@@ -168,16 +168,15 @@ Global flag:
 ```
 
 - `text`: human-readable output
-- `json`: array of results
+- `json`: array of results (minimal fields)
 - `json2`: currently identical to `json` (reserved for structured output)
 
-Search result JSON fields:
+Search result JSON fields (minimal):
 ```
-path, score, snippet, line, context_before, context_after
-text_score, vector_score, hybrid_score, result_id, chunk_start, chunk_end
+path, snippet, line
+context_before, context_after
 ```
-Optional fields appear only in hybrid/semantic mode.
-For symbol results, `result_id` is the symbol ID and `chunk_start`/`chunk_end` are the symbol start/end line numbers.
+Context fields appear only when `-C/--context` is used and the context is non-empty.
 
 ## Embeddings (optional)
 
