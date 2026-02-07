@@ -17,6 +17,22 @@ use clap_complete::generate;
 use cli::{Cli, Commands};
 use tracing_subscriber::EnvFilter;
 
+fn config_output_to_cli(format: cgrep::config::ConfigOutputFormat) -> cli::OutputFormat {
+    match format {
+        cgrep::config::ConfigOutputFormat::Text => cli::OutputFormat::Text,
+        cgrep::config::ConfigOutputFormat::Json => cli::OutputFormat::Json,
+        cgrep::config::ConfigOutputFormat::Json2 => cli::OutputFormat::Json2,
+    }
+}
+
+fn config_search_mode_to_hybrid(mode: cgrep::config::SearchMode) -> cgrep::hybrid::SearchMode {
+    match mode {
+        cgrep::config::SearchMode::Keyword => cgrep::hybrid::SearchMode::Keyword,
+        cgrep::config::SearchMode::Semantic => cgrep::hybrid::SearchMode::Semantic,
+        cgrep::config::SearchMode::Hybrid => cgrep::hybrid::SearchMode::Hybrid,
+    }
+}
+
 fn main() -> Result<()> {
     // Initialize tracing with CGREP_LOG env var (e.g., CGREP_LOG=debug cgrep search "query")
     tracing_subscriber::fmt()
@@ -26,8 +42,14 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let format = cli.format;
+    let global_config = cgrep::config::Config::load();
+    let default_format = global_config
+        .output_format()
+        .map(config_output_to_cli)
+        .unwrap_or(cli::OutputFormat::Text);
+    let cli_format = cli.format;
     let compact = cli.compact;
+    let global_format = cli_format.unwrap_or(default_format);
 
     match cli.command {
         Commands::Search {
@@ -52,7 +74,47 @@ fn main() -> Result<()> {
             agent_cache,
             cache_ttl,
         } => {
+            let config = path
+                .as_deref()
+                .map(cgrep::config::Config::load_for_dir)
+                .unwrap_or_else(cgrep::config::Config::load);
+            let profile_config = profile.as_deref().map(|name| config.profile(name));
+
+            let effective_format = cli_format
+                .or_else(|| {
+                    profile_config
+                        .as_ref()
+                        .and_then(|p| p.format)
+                        .map(config_output_to_cli)
+                })
+                .or_else(|| config.output_format().map(config_output_to_cli))
+                .unwrap_or(cli::OutputFormat::Text);
+
+            let effective_max_results = max_results
+                .or_else(|| profile_config.as_ref().and_then(|p| p.max_results))
+                .or(config.max_results)
+                .unwrap_or(20);
+            let effective_context = context
+                .or_else(|| profile_config.as_ref().and_then(|p| p.context))
+                .unwrap_or(0);
+            let effective_context_pack = context_pack.or_else(|| {
+                profile_config
+                    .as_ref()
+                    .and_then(|p| p.context_pack.or(p.context))
+            });
+            let effective_agent_cache = agent_cache
+                || profile_config
+                    .as_ref()
+                    .and_then(|p| p.agent_cache)
+                    .unwrap_or(false);
+            let effective_cache_ttl = cache_ttl.or(Some(config.cache.ttl_ms()));
+
             // Determine effective search mode from flags
+            let profile_mode = profile_config
+                .as_ref()
+                .and_then(|p| p.mode)
+                .map(config_search_mode_to_hybrid);
+            let config_mode = config.search.default_mode.map(config_search_mode_to_hybrid);
             let effective_mode = if hybrid {
                 Some(cgrep::hybrid::SearchMode::Hybrid)
             } else if semantic {
@@ -65,16 +127,15 @@ fn main() -> Result<()> {
                     cli::CliSearchMode::Semantic => cgrep::hybrid::SearchMode::Semantic,
                     cli::CliSearchMode::Hybrid => cgrep::hybrid::SearchMode::Hybrid,
                 })
+                .or(profile_mode)
+                .or(config_mode)
             };
-
-            // Apply profile settings if specified
-            let _ = profile; // TODO: Apply profile settings
 
             query::search::run(
                 &query,
                 path.as_deref(),
-                max_results,
-                context,
+                effective_max_results,
+                effective_context,
                 file_type.as_deref(),
                 glob.as_deref(),
                 exclude.as_deref(),
@@ -83,12 +144,12 @@ fn main() -> Result<()> {
                 no_index,
                 regex,
                 case_sensitive,
-                format,
+                effective_format,
                 compact,
                 effective_mode,
-                context_pack,
-                agent_cache,
-                cache_ttl,
+                effective_context_pack,
+                effective_agent_cache,
+                effective_cache_ttl,
             )?;
         }
         Commands::Symbols {
@@ -108,25 +169,25 @@ fn main() -> Result<()> {
                 glob.as_deref(),
                 exclude.as_deref(),
                 quiet,
-                format,
+                global_format,
                 compact,
             )?;
         }
         Commands::Definition { name } => {
-            query::definition::run(&name, format, compact)?;
+            query::definition::run(&name, global_format, compact)?;
         }
         Commands::Callers { function } => {
-            query::callers::run(&function, format, compact)?;
+            query::callers::run(&function, global_format, compact)?;
         }
         Commands::References {
             name,
             path,
             max_results,
         } => {
-            query::references::run(&name, path.as_deref(), max_results, format, compact)?;
+            query::references::run(&name, path.as_deref(), max_results, global_format, compact)?;
         }
         Commands::Dependents { file } => {
-            query::dependents::run(&file, format, compact)?;
+            query::dependents::run(&file, global_format, compact)?;
         }
         Commands::Index {
             path,

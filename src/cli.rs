@@ -14,8 +14,8 @@ use clap_complete::Shell;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Output format (text or json)
-    #[arg(long, default_value = "text", global = true)]
-    pub format: OutputFormat,
+    #[arg(long, global = true)]
+    pub format: Option<OutputFormat>,
 
     /// Compact JSON output (no pretty formatting)
     #[arg(long, global = true)]
@@ -59,12 +59,12 @@ pub enum Commands {
         path: Option<String>,
 
         /// Maximum number of results
-        #[arg(short, long, default_value = "20")]
-        max_results: usize,
+        #[arg(short, long)]
+        max_results: Option<usize>,
 
         /// Show N lines before and after each match (like grep -C)
-        #[arg(short = 'C', long, default_value = "0")]
-        context: usize,
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
 
         /// Filter by file type/language (e.g., rust, ts, python)
         #[arg(short = 't', long = "type")]

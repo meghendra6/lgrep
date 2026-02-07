@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
@@ -131,6 +131,91 @@ struct SearchOutcome {
     files_with_matches: usize,
     total_matches: usize,
     mode: IndexMode,
+    cache_hit: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SearchJson2Meta<'a> {
+    schema_version: &'a str,
+    query: &'a str,
+    search_mode: String,
+    index_mode: &'static str,
+    elapsed_ms: f64,
+    files_with_matches: usize,
+    total_matches: usize,
+    cache_hit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_pack: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct SearchJson2Result<'a> {
+    id: String,
+    path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_line: Option<usize>,
+    snippet: &'a str,
+    score: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vector_score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hybrid_score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_before: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_after: Option<&'a [String]>,
+}
+
+impl<'a> SearchJson2Result<'a> {
+    fn from_result(result: &'a SearchResult, include_context: bool) -> Self {
+        let (start_line, end_line) = if let Some(line) = result.line {
+            let start = line.saturating_sub(result.context_before.len());
+            let end = line + result.context_after.len();
+            (Some(start), Some(end))
+        } else {
+            (None, None)
+        };
+
+        let id = result
+            .result_id
+            .clone()
+            .unwrap_or_else(|| stable_result_id(result));
+
+        Self {
+            id,
+            path: result.path.as_str(),
+            line: result.line,
+            start_line,
+            end_line,
+            snippet: result.snippet.as_str(),
+            score: result.score,
+            text_score: result.text_score,
+            vector_score: result.vector_score,
+            hybrid_score: result.hybrid_score,
+            context_before: if include_context && !result.context_before.is_empty() {
+                Some(result.context_before.as_slice())
+            } else {
+                None
+            },
+            context_after: if include_context && !result.context_after.is_empty() {
+                Some(result.context_after.as_slice())
+            } else {
+                None
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SearchJson2Payload<'a> {
+    meta: SearchJson2Meta<'a>,
+    results: Vec<SearchJson2Result<'a>>,
 }
 
 /// Run the search command
@@ -150,7 +235,7 @@ pub fn run(
     format: OutputFormat,
     compact: bool,
     search_mode: Option<HybridSearchMode>,
-    _context_pack: Option<usize>,
+    context_pack: Option<usize>,
     use_cache: bool,
     cache_ttl: Option<u64>,
 ) -> Result<()> {
@@ -175,7 +260,7 @@ pub fn run(
 
     // Load config relative to the index root so running from subdirectories works.
     let config = Config::load_for_dir(&index_root);
-    let effective_max_results = config.merge_max_results(Some(max_results));
+    let effective_max_results = max_results;
     let config_exclude_patterns: Vec<CompiledGlob> = config
         .exclude_patterns
         .iter()
@@ -210,7 +295,7 @@ pub fn run(
     // Check for hybrid search mode
     let effective_search_mode = search_mode.unwrap_or(HybridSearchMode::Keyword);
 
-    let outcome = match effective_search_mode {
+    let mut outcome = match effective_search_mode {
         HybridSearchMode::Semantic | HybridSearchMode::Hybrid => {
             // Use hybrid search
             hybrid_search(
@@ -267,11 +352,16 @@ pub fn run(
         }
     };
 
+    let effective_context_pack = context_pack.filter(|v| *v > 0);
+    if let Some(pack_gap) = effective_context_pack {
+        apply_context_pack(&mut outcome.results, pack_gap);
+    }
+
     let elapsed = start_time.elapsed();
 
     // Output based on format
     match format {
-        OutputFormat::Json | OutputFormat::Json2 => {
+        OutputFormat::Json => {
             if compact {
                 let json_results: Vec<SearchResultCompactJson<'_>> = outcome
                     .results
@@ -287,6 +377,33 @@ pub fn run(
                     .collect();
                 print_json(&json_results, compact)?;
             }
+        }
+        OutputFormat::Json2 => {
+            let json2_results: Vec<SearchJson2Result<'_>> = outcome
+                .results
+                .iter()
+                .map(|result| SearchJson2Result::from_result(result, !compact))
+                .collect();
+
+            let payload = SearchJson2Payload {
+                meta: SearchJson2Meta {
+                    schema_version: "1",
+                    query,
+                    search_mode: effective_search_mode.to_string(),
+                    index_mode: match outcome.mode {
+                        IndexMode::Index => "index",
+                        IndexMode::Scan => "scan",
+                    },
+                    elapsed_ms: elapsed.as_secs_f64() * 1000.0,
+                    files_with_matches: outcome.files_with_matches,
+                    total_matches: outcome.total_matches,
+                    cache_hit: outcome.cache_hit,
+                    context_pack: effective_context_pack,
+                },
+                results: json2_results,
+            };
+
+            print_json(&payload, compact)?;
         }
         OutputFormat::Text => {
             if outcome.results.is_empty() {
@@ -358,11 +475,7 @@ pub fn run(
                         .unwrap_or_default();
 
                     if use_color {
-                        println!(
-                            "{}{}",
-                            colorize_path(&result.path, use_color),
-                            line_info
-                        );
+                        println!("{}{}", colorize_path(&result.path, use_color), line_info);
                     } else {
                         println!("{}{}", result.path, line_info);
                     }
@@ -426,6 +539,54 @@ pub fn run(
     Ok(())
 }
 
+fn stable_result_id(result: &SearchResult) -> String {
+    let payload = format!(
+        "{}:{}:{}",
+        result.path,
+        result.line.unwrap_or(0),
+        result.snippet
+    );
+    let hash = blake3::hash(payload.as_bytes());
+    hash.to_hex()[..16].to_string()
+}
+
+fn apply_context_pack(results: &mut [SearchResult], pack_gap: usize) {
+    let mut last_end_by_path: HashMap<String, usize> = HashMap::new();
+
+    for result in results.iter_mut() {
+        let Some(line) = result.line else {
+            continue;
+        };
+
+        if result.context_before.is_empty() && result.context_after.is_empty() {
+            continue;
+        }
+
+        let start = line.saturating_sub(result.context_before.len());
+        let end = line + result.context_after.len();
+
+        if let Some(last_end) = last_end_by_path.get_mut(&result.path) {
+            if start <= last_end.saturating_add(pack_gap) {
+                if start <= *last_end {
+                    let overlap = *last_end - start + 1;
+                    let trim_before = overlap.min(result.context_before.len());
+                    if trim_before > 0 {
+                        result.context_before.drain(0..trim_before);
+                    }
+                    if end <= *last_end {
+                        result.context_after.clear();
+                    }
+                }
+                *last_end = (*last_end).max(end);
+            } else {
+                *last_end = end;
+            }
+        } else {
+            last_end_by_path.insert(result.path.clone(), end);
+        }
+    }
+}
+
 /// Get context lines around a match
 fn get_context_lines(
     file_path: &std::path::Path,
@@ -437,7 +598,7 @@ fn get_context_lines(
     };
 
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let lines: Vec<String> = reader.lines().map_while(|line| line.ok()).collect();
 
     let start = line_num.saturating_sub(context + 1);
     let end = (line_num + context).min(lines.len());
@@ -712,6 +873,7 @@ fn index_search(
         files_with_matches: files_with_matches.len(),
         total_matches,
         mode: IndexMode::Index,
+        cache_hit: false,
     })
 }
 
@@ -865,6 +1027,7 @@ fn scan_search(
         files_with_matches: files_with_matches.len(),
         total_matches,
         mode: IndexMode::Scan,
+        cache_hit: false,
     })
 }
 
@@ -942,6 +1105,7 @@ fn hybrid_search(
                     files_with_matches,
                     total_matches,
                     mode: IndexMode::Index,
+                    cache_hit: true,
                 });
             }
         }
@@ -1180,6 +1344,7 @@ fn hybrid_search(
         files_with_matches: files_count,
         total_matches,
         mode: IndexMode::Index,
+        cache_hit: false,
     })
 }
 
@@ -1409,5 +1574,67 @@ mod tests {
 
         assert_eq!(outcome.results.len(), 1);
         assert_eq!(outcome.results[0].path, "sub.rs");
+    }
+
+    #[test]
+    fn context_pack_trims_overlapping_context() {
+        let mut results = vec![
+            SearchResult {
+                path: "src/lib.rs".to_string(),
+                score: 1.0,
+                snippet: "fn alpha() {}".to_string(),
+                line: Some(10),
+                context_before: vec!["line 8".to_string(), "line 9".to_string()],
+                context_after: vec!["line 11".to_string(), "line 12".to_string()],
+                text_score: None,
+                vector_score: None,
+                hybrid_score: None,
+                result_id: None,
+                chunk_start: None,
+                chunk_end: None,
+            },
+            SearchResult {
+                path: "src/lib.rs".to_string(),
+                score: 0.9,
+                snippet: "fn beta() {}".to_string(),
+                line: Some(11),
+                context_before: vec!["line 9".to_string(), "line 10".to_string()],
+                context_after: vec!["line 12".to_string(), "line 13".to_string()],
+                text_score: None,
+                vector_score: None,
+                hybrid_score: None,
+                result_id: None,
+                chunk_start: None,
+                chunk_end: None,
+            },
+        ];
+
+        apply_context_pack(&mut results, 0);
+
+        assert!(results[1].context_before.is_empty());
+        assert_eq!(results[1].context_after, vec!["line 12", "line 13"]);
+    }
+
+    #[test]
+    fn stable_result_id_is_deterministic() {
+        let result = SearchResult {
+            path: "src/lib.rs".to_string(),
+            score: 1.0,
+            snippet: "fn alpha() {}".to_string(),
+            line: Some(10),
+            context_before: vec![],
+            context_after: vec![],
+            text_score: None,
+            vector_score: None,
+            hybrid_score: None,
+            result_id: None,
+            chunk_start: None,
+            chunk_end: None,
+        };
+
+        let a = stable_result_id(&result);
+        let b = stable_result_id(&result);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
     }
 }

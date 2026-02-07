@@ -393,6 +393,7 @@ impl Config {
             .as_ref()
             .and_then(|s| match s.to_lowercase().as_str() {
                 "json" => Some(ConfigOutputFormat::Json),
+                "json2" => Some(ConfigOutputFormat::Json2),
                 "text" => Some(ConfigOutputFormat::Text),
                 _ => None,
             })
