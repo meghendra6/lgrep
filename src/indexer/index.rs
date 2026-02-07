@@ -692,11 +692,7 @@ fn symbol_id_for(path: &str, lang: &str, symbol: &Symbol) -> String {
     };
     let input = format!(
         "{}:{}:{}:{}:{}",
-        path,
-        lang,
-        symbol.kind,
-        symbol.name,
-        range
+        path, lang, symbol.kind, symbol.name, range
     );
     let hash = blake3::hash(input.as_bytes());
     hash.to_hex().to_string()
@@ -718,7 +714,12 @@ fn build_symbol_preview(source: &str, symbol: &Symbol, preview_lines: usize) -> 
     lines[start_idx..preview_end].join("\n")
 }
 
-fn build_symbol_content(source: &str, symbol: &Symbol, preview_lines: usize, max_chars: usize) -> String {
+fn build_symbol_content(
+    source: &str,
+    symbol: &Symbol,
+    preview_lines: usize,
+    max_chars: usize,
+) -> String {
     let header = format!("{} {}", symbol.name, symbol.kind);
     let preview = build_symbol_preview(source, symbol, preview_lines);
     let combined = if preview.is_empty() {

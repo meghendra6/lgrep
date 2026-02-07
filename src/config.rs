@@ -173,12 +173,9 @@ impl EmbeddingConfig {
 
     /// Get allowlist of symbol kinds (lowercased)
     pub fn symbol_kinds(&self) -> Option<Vec<String>> {
-        self.symbol_kinds.as_ref().map(|kinds| {
-            kinds
-                .iter()
-                .map(|k| k.to_lowercase())
-                .collect::<Vec<_>>()
-        })
+        self.symbol_kinds
+            .as_ref()
+            .map(|kinds| kinds.iter().map(|k| k.to_lowercase()).collect::<Vec<_>>())
     }
 }
 

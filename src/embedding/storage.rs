@@ -300,8 +300,9 @@ impl EmbeddingStorage {
 
         let max_vars = 900usize;
         if symbol_ids.len() <= max_vars {
-            let mut query =
-                String::from("DELETE FROM symbol_embeddings WHERE path = ?1 AND symbol_id NOT IN (");
+            let mut query = String::from(
+                "DELETE FROM symbol_embeddings WHERE path = ?1 AND symbol_id NOT IN (",
+            );
             for i in 0..symbol_ids.len() {
                 if i > 0 {
                     query.push_str(", ");
@@ -310,7 +311,8 @@ impl EmbeddingStorage {
             }
             query.push(')');
 
-            let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(symbol_ids.len() + 1);
+            let mut params_vec: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(symbol_ids.len() + 1);
             params_vec.push(&path);
             for id in symbol_ids {
                 params_vec.push(id);
@@ -324,9 +326,8 @@ impl EmbeddingStorage {
                 "#,
             )?;
             {
-                let mut stmt = tx.prepare(
-                    "INSERT OR IGNORE INTO temp_symbol_ids (symbol_id) VALUES (?1)",
-                )?;
+                let mut stmt =
+                    tx.prepare("INSERT OR IGNORE INTO temp_symbol_ids (symbol_id) VALUES (?1)")?;
                 for id in symbol_ids {
                     stmt.execute(params![id])?;
                 }
@@ -605,11 +606,11 @@ impl EmbeddingStorage {
 
     /// Counts total number of symbol embeddings.
     pub fn count_symbols(&self) -> Result<u64> {
-        let count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM symbol_embeddings", [], |row| {
-                row.get(0)
-            })?;
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM symbol_embeddings", [], |row| {
+                    row.get(0)
+                })?;
         Ok(count as u64)
     }
 

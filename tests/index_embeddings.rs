@@ -139,8 +139,14 @@ fn index_removes_embeddings_for_deleted_files() {
     let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
     let a_path_str = a_path.to_string_lossy().to_string();
     let b_path_str = b_path.to_string_lossy().to_string();
-    assert!(!storage.get_symbols_for_path(&a_path_str).unwrap().is_empty());
-    assert!(storage.get_symbols_for_path(&b_path_str).unwrap().is_empty());
+    assert!(!storage
+        .get_symbols_for_path(&a_path_str)
+        .unwrap()
+        .is_empty());
+    assert!(storage
+        .get_symbols_for_path(&b_path_str)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -190,9 +196,7 @@ fn index_precompute_errors_on_schema_mismatch() {
         .arg("--path")
         .arg(dir.path())
         .args(["--embeddings", "precompute"]);
-    cmd.assert()
-        .failure()
-        .stderr(contains("embeddings-force"));
+    cmd.assert().failure().stderr(contains("embeddings-force"));
 }
 
 #[test]
