@@ -42,18 +42,22 @@ cgrep dependents src/auth.rs
 
 ## When to use what
 - `cgrep index` then `cgrep search` for repeated searches or large repos.
-- `cgrep search --no-index` for one-off searches or when you do not want an index.
-- `cgrep search --regex` for regex-only scans.
+- `cgrep search --mode keyword` is the default and works with index/scan fallback.
+- `cgrep search --mode semantic|hybrid` when embeddings are configured.
+- `cgrep agent locate` + `cgrep agent expand` for AI agent loops.
 - `cgrep symbols`, `definition`, `callers`, `references` when you know the symbol name.
 - `cgrep dependents` to find files importing a given file.
 - `cgrep watch` to keep the index fresh while you code.
-- `cgrep search --semantic` or `cgrep search --hybrid` when embeddings are configured and you want semantic ranking.
 
 ## Commands
 
 | Command | Description |
 |--------|-------------|
 | `cgrep search <query>` (`s`) | Full-text search (BM25), or hybrid/semantic if enabled |
+| `cgrep agent locate <query>` | Agent stage 1: minimal candidate retrieval (`json2`) |
+| `cgrep agent expand --id <id>...` | Agent stage 2: expand selected IDs with context (`json2`) |
+| `cgrep agent install <provider>` | Install cgrep instructions for `claude-code|codex|copilot|opencode` |
+| `cgrep agent uninstall <provider>` | Remove cgrep instructions for provider |
 | `cgrep symbols <name>` | Search symbols by name |
 | `cgrep definition <name>` (`def`) | Find symbol definition location |
 | `cgrep callers <function>` | Find callers of a function |
@@ -62,8 +66,6 @@ cgrep dependents src/auth.rs
 | `cgrep index` | Build or rebuild the search index |
 | `cgrep watch` | Watch for file changes and update index |
 | `cgrep completions <shell>` | Generate shell completions |
-| `cgrep install-*` | Install agent instructions |
-| `cgrep uninstall-*` | Uninstall agent instructions |
 
 ## Search modes
 
@@ -78,12 +80,9 @@ Examples:
 cgrep search "token refresh" --mode keyword
 cgrep search "token refresh" --mode semantic
 cgrep search "token refresh" --mode hybrid
-
-# Shorthand aliases
-cgrep search "token refresh" --keyword
-cgrep search "token refresh" --semantic
-cgrep search "token refresh" --hybrid
 ```
+
+Legacy aliases (`--keyword`, `--semantic`, `--hybrid`) are deprecated.
 
 Notes:
 - Hybrid/semantic require a BM25 index; there is no scan fallback.
@@ -94,45 +93,37 @@ Notes:
 Common flags:
 ```
 -p, --path <path>        Path to search in (default: current directory)
--m, --max-results <n>    Maximum results (default: 20)
+-m, --limit <n>          Maximum results (default: 20)
 -C, --context <n>        Context lines before/after matches
 -t, --type <type>        File type filter (rust, ts, python, ...)
 -g, --glob <pattern>     Glob filter (e.g. "src/**/*.rs")
     --exclude <pattern>  Exclude pattern
--q, --quiet              Suppress statistics output
--f, --fuzzy              Fuzzy BM25 matching (index mode only)
     --changed [<rev>]    Limit to files changed since revision (default: HEAD)
-    --max-chars-per-snippet <n>  Cap snippet size per result
-    --max-context-chars <n>      Cap context size per result
-    --max-total-chars <n>        Cap total returned characters
-    --dedupe-context             Remove duplicated context lines
-    --path-alias                 Use p1/p2 path aliases in json2 + meta lookup
-    --suppress-boilerplate       Suppress repeated import/header boilerplate
+    --budget <preset>    tight|balanced|full|off
+    --profile <name>     human|agent|fast
+-q, --quiet              Suppress statistics output
 ```
 
 Mode selection:
 ```
     --mode <mode>        keyword|semantic|hybrid
-    --keyword            Alias for --mode keyword
-    --semantic           Alias for --mode semantic
-    --hybrid             Alias for --mode hybrid
+    --regex              Regex search (scan mode)
+    --case-sensitive     Case-sensitive scan mode
 ```
 
-Scan mode:
+Advanced flags:
 ```
+    --help-advanced               Print advanced search options
     --no-index           Force scan mode (no index)
-    --regex              Regex search (scan mode only)
-    --case-sensitive     Case-sensitive (scan mode only)
+    --fuzzy              Fuzzy BM25 matching (index mode only)
+    --agent-cache        Enable search-result cache
+    --cache-ttl <ms>     Cache TTL in milliseconds
+    --context-pack <n>   Merge overlapping/adjacent context windows
+    --max-chars-per-snippet <n>  Manual snippet cap
+    --max-context-chars <n>      Manual context cap
+    --max-total-chars <n>        Manual total payload cap
 ```
 Note: In keyword mode, if no index exists, cgrep falls back to scan mode.
-
-Agent/cache:
-```
-    --agent-cache        Cache search results for agent loops (keyword/hybrid/semantic)
-    --cache-ttl <ms>     Cache TTL in milliseconds (default: 600000)
-    --context-pack <n>   Merge overlapping/adjacent context windows
-    --profile <name>     Apply preset profile (human, agent, fast)
-```
 
 ## Command-specific flags
 
@@ -150,7 +141,7 @@ Symbols:
 References:
 ```
 -p, --path <path>        Path to search in
--m, --max-results <n>    Maximum results (default: 50)
+-m, --limit <n>          Maximum results (default: 50)
     --changed [<rev>]    Limit to files changed since revision (default: HEAD)
 ```
 
@@ -250,7 +241,7 @@ FASTEMBED_NORMALIZE=true
 
 ### Using embeddings in search
 
-If `.cgrep/embeddings.sqlite` exists, `cgrep search --semantic/--hybrid` uses it
+If `.cgrep/embeddings.sqlite` exists, `cgrep search --mode semantic|hybrid` uses it
 for embedding-based scoring. Query embeddings are generated using the
 configured provider. If the DB or provider is unavailable, it falls back to
 BM25-only results with a warning.
@@ -298,7 +289,7 @@ symbol_max_chars = 1200
 # symbol_kinds = ["function", "class", "method"]
 ```
 Notes:
-- `max_results` is used as the default for search when `-m/--max-results` is not provided.
+- `max_results` is used as the default for search when `-m/--limit` is not provided.
 - `[index].exclude_paths` is applied during indexing and combined with
   `cgrep index --exclude` (CLI flags are applied first).
 
@@ -323,18 +314,18 @@ Files outside these extensions are ignored.
 
 Install local instruction files so your agent uses cgrep for code search:
 ```
-cgrep install-claude-code
-cgrep install-codex
-cgrep install-copilot
-cgrep install-opencode
+cgrep agent install claude-code
+cgrep agent install codex
+cgrep agent install copilot
+cgrep agent install opencode
 ```
 
 Uninstall:
 ```
-cgrep uninstall-claude-code
-cgrep uninstall-codex
-cgrep uninstall-copilot
-cgrep uninstall-opencode
+cgrep agent uninstall claude-code
+cgrep agent uninstall codex
+cgrep agent uninstall copilot
+cgrep agent uninstall opencode
 ```
 
 What gets updated:
@@ -344,15 +335,13 @@ What gets updated:
 - OpenCode: `~/.config/opencode/tool/cgrep.ts` (you may need to add it to OpenCode config)
 
 Agent usage tips:
-- Use `--format json --compact` or `--format json2 --compact` for structured output.
-- Add `-C` for context lines.
-- Use `--max-total-chars` for hard payload caps.
-- Use `--max-chars-per-snippet` / `--max-context-chars` for per-result trimming.
-- For hybrid/semantic sessions, enable caching with `--agent-cache` and adjust `--cache-ttl`.
+- Use `cgrep agent locate "<query>"` first, then `cgrep agent expand --id ...`.
+- `agent locate` defaults to `json2`, token-efficient formatting, and caching.
+- Use `--budget tight|balanced|full|off` to control payload size quickly.
 
 ## Troubleshooting
 
-- Index not found or hybrid/semantic error: run `cgrep index` (required for `--semantic/--hybrid`).
+- Index not found or hybrid/semantic error: run `cgrep index` (required for `--mode semantic|hybrid`).
 - Results missing when running from a subdirectory: use `-p` to change the search scope.
 - Hybrid/semantic returns BM25-only results: ensure `.cgrep/embeddings.sqlite` exists and your embedding provider is configured.
 - Symbols not found for a language: only the AST-supported languages above provide symbol extraction.

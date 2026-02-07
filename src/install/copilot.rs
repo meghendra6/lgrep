@@ -58,13 +58,13 @@ cgrep dependents src/auth.rs
 
 | Option | Description |
 |--------|-------------|
-| `-m, --max-results <n>` | Limit number of results (default: 20) |
+| `-m, --limit <n>` | Limit number of results (default: 20) |
 | `-C, --context <n>` | Context lines (default: 0) |
 | `-p, --path <path>` | Search in specific directory |
 | `--no-index` / `--regex` | Scan mode and regex search |
 | `--format json|json2` | Structured output |
 | `--compact` | Compact JSON output |
-| `--semantic` / `--hybrid` | Optional; requires embeddings + index |
+| `--mode semantic|hybrid` | Optional; requires embeddings + index |
 
 ## Best Practices
 
@@ -95,7 +95,7 @@ This project uses **cgrep** for local code search. When searching for code or co
 2. For symbol lookup: `cgrep symbols <name>` (use `-T` for symbol kind)
 3. For definitions: `cgrep definition <name>`
 4. Use `--format json --compact` or `--format json2 --compact` for machine-readable output
-5. Optional: `--semantic` / `--hybrid` when embeddings + index are available
+5. Optional: `--mode semantic|hybrid` when embeddings + index are available
 
 cgrep uses tantivy + tree-sitter for fast offline code search.
 "#;

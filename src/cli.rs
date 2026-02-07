@@ -46,11 +46,28 @@ pub enum CliSearchMode {
     Hybrid,
 }
 
+/// Output budget preset for token-efficient responses
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliBudgetPreset {
+    Tight,
+    Balanced,
+    Full,
+    Off,
+}
+
+/// Agent provider for install/uninstall commands
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AgentProvider {
+    ClaudeCode,
+    Codex,
+    Copilot,
+    Opencode,
+}
+
 #[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Full-text search with BM25 ranking
-    #[command(alias = "s")]
-    Search {
+pub enum AgentCommands {
+    /// Stage 1: locate candidate code regions with minimal payload
+    Locate {
         /// Search query (natural language or keywords)
         query: String,
 
@@ -58,105 +75,202 @@ pub enum Commands {
         #[arg(short, long)]
         path: Option<String>,
 
-        /// Maximum number of results
-        #[arg(short, long)]
-        max_results: Option<usize>,
-
-        /// Show N lines before and after each match (like grep -C)
-        #[arg(short = 'C', long)]
-        context: Option<usize>,
-
-        /// Filter by file type/language (e.g., rust, ts, python)
-        #[arg(short = 't', long = "type")]
-        file_type: Option<String>,
-
-        /// Filter files matching glob pattern (e.g., "*.rs", "src/**/*.ts")
-        #[arg(short = 'g', long)]
-        glob: Option<String>,
-
-        /// Exclude files matching pattern
-        #[arg(long)]
-        exclude: Option<String>,
-
         /// Limit search to files changed since revision (default: HEAD)
         #[arg(long, num_args = 0..=1, default_missing_value = "HEAD")]
         changed: Option<String>,
 
-        /// Suppress statistics output
-        #[arg(short = 'q', long)]
-        quiet: bool,
-
-        /// Enable fuzzy matching (allows 1-2 character differences)
-        #[arg(short = 'f', long)]
-        fuzzy: bool,
-
-        /// Do not use the index; scan files directly
-        #[arg(long)]
-        no_index: bool,
-
-        /// Treat query as a regular expression (scan mode)
-        #[arg(long)]
-        regex: bool,
-
-        /// Case-sensitive search (scan mode)
-        #[arg(long)]
-        case_sensitive: bool,
+        /// Maximum number of results to return
+        #[arg(short = 'm', long = "limit")]
+        limit: Option<usize>,
 
         /// Search mode: keyword, semantic, or hybrid
         #[arg(long, value_enum)]
         mode: Option<CliSearchMode>,
 
-        /// Use keyword search only (alias for --mode keyword)
-        #[arg(long, conflicts_with = "semantic", conflicts_with = "hybrid")]
-        keyword: bool,
+        /// Output budget preset (default: balanced)
+        #[arg(long, value_enum)]
+        budget: Option<CliBudgetPreset>,
+    },
 
-        /// Use semantic search only (alias for --mode semantic)
-        #[arg(long, conflicts_with = "keyword", conflicts_with = "hybrid")]
-        semantic: bool,
+    /// Stage 2: expand selected locate result IDs into richer context
+    Expand {
+        /// Result ID from `agent locate` (repeatable)
+        #[arg(long = "id", required = true)]
+        ids: Vec<String>,
 
-        /// Use hybrid search (alias for --mode hybrid)
-        #[arg(long, conflicts_with = "keyword", conflicts_with = "semantic")]
-        hybrid: bool,
+        /// Path to search in (defaults to current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// Context lines to return around each ID match
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+    },
+
+    /// Install cgrep instructions for an AI agent provider
+    Install {
+        #[arg(value_enum)]
+        provider: AgentProvider,
+    },
+
+    /// Uninstall cgrep instructions for an AI agent provider
+    Uninstall {
+        #[arg(value_enum)]
+        provider: AgentProvider,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Full-text search with BM25 ranking
+    #[command(alias = "s")]
+    Search {
+        /// Search query (natural language or keywords)
+        #[arg(required_unless_present = "help_advanced")]
+        query: Option<String>,
+
+        /// Path to search in (defaults to current directory)
+        #[arg(short, long, help_heading = "Core")]
+        path: Option<String>,
+
+        /// Maximum number of results
+        #[arg(
+            short = 'm',
+            long = "limit",
+            visible_alias = "max-results",
+            help_heading = "Core"
+        )]
+        limit: Option<usize>,
+
+        /// Show N lines before and after each match (like grep -C)
+        #[arg(short = 'C', long, help_heading = "Core")]
+        context: Option<usize>,
+
+        /// Filter by file type/language (e.g., rust, ts, python)
+        #[arg(short = 't', long = "type", help_heading = "Core")]
+        file_type: Option<String>,
+
+        /// Filter files matching glob pattern (e.g., "*.rs", "src/**/*.ts")
+        #[arg(short = 'g', long, help_heading = "Core")]
+        glob: Option<String>,
+
+        /// Exclude files matching pattern
+        #[arg(long, help_heading = "Core")]
+        exclude: Option<String>,
+
+        /// Limit search to files changed since revision (default: HEAD)
+        #[arg(
+            long,
+            num_args = 0..=1,
+            default_missing_value = "HEAD",
+            help_heading = "Core"
+        )]
+        changed: Option<String>,
+
+        /// Output budget preset (tight, balanced, full, off)
+        #[arg(long, value_enum, help_heading = "Core")]
+        budget: Option<CliBudgetPreset>,
 
         /// Use a preset profile (human, agent, fast)
-        #[arg(long)]
+        #[arg(long, help_heading = "Core")]
         profile: Option<String>,
 
+        /// Suppress statistics output
+        #[arg(short = 'q', long, help_heading = "Core")]
+        quiet: bool,
+
+        /// Treat query as a regular expression (scan mode)
+        #[arg(long, help_heading = "Mode")]
+        regex: bool,
+
+        /// Case-sensitive search (scan mode)
+        #[arg(long, help_heading = "Mode")]
+        case_sensitive: bool,
+
+        /// Search mode: keyword, semantic, or hybrid
+        #[arg(long, value_enum, help_heading = "Mode")]
+        mode: Option<CliSearchMode>,
+
+        /// Deprecated: use `--mode keyword`
+        #[arg(
+            long,
+            hide = true,
+            conflicts_with = "semantic",
+            conflicts_with = "hybrid"
+        )]
+        keyword: bool,
+
+        /// Deprecated: use `--mode semantic`
+        #[arg(
+            long,
+            hide = true,
+            conflicts_with = "keyword",
+            conflicts_with = "hybrid"
+        )]
+        semantic: bool,
+
+        /// Deprecated: use `--mode hybrid`
+        #[arg(
+            long,
+            hide = true,
+            conflicts_with = "keyword",
+            conflicts_with = "semantic"
+        )]
+        hybrid: bool,
+
+        /// Print advanced options for search and exit
+        #[arg(long, help_heading = "Help")]
+        help_advanced: bool,
+
         /// Context pack size for agent mode (merges overlapping context)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         context_pack: Option<usize>,
 
         /// Enable agent session caching
-        #[arg(long)]
+        #[arg(long, hide = true)]
         agent_cache: bool,
 
         /// Cache TTL in milliseconds (default: 600000 = 10 minutes)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         cache_ttl: Option<u64>,
 
         /// Maximum characters per snippet in output
-        #[arg(long)]
+        #[arg(long, hide = true)]
         max_chars_per_snippet: Option<usize>,
 
         /// Maximum total characters across returned results
-        #[arg(long)]
+        #[arg(long, hide = true)]
         max_total_chars: Option<usize>,
 
         /// Maximum context characters per result (before+after)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         max_context_chars: Option<usize>,
 
         /// Remove duplicated context lines across results
-        #[arg(long)]
+        #[arg(long, hide = true)]
         dedupe_context: bool,
 
         /// Use short path aliases (p1, p2, ...) in json2 output with lookup table in meta
-        #[arg(long)]
+        #[arg(long, hide = true)]
         path_alias: bool,
 
         /// Suppress repeated boilerplate lines (imports/headers) in snippets and context
-        #[arg(long)]
+        #[arg(long, hide = true)]
         suppress_boilerplate: bool,
+
+        /// Enable fuzzy matching (allows 1-2 character differences)
+        #[arg(short = 'f', long, hide = true)]
+        fuzzy: bool,
+
+        /// Do not use the index; scan files directly
+        #[arg(long, hide = true)]
+        no_index: bool,
+    },
+
+    /// Agent-optimized workflow: locate/expand/install/uninstall
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
     },
 
     /// Search for symbols (functions, classes, etc.)
@@ -217,7 +331,12 @@ pub enum Commands {
         path: Option<String>,
 
         /// Maximum number of results
-        #[arg(short, long, default_value = "50")]
+        #[arg(
+            short = 'm',
+            long = "limit",
+            visible_alias = "max-results",
+            default_value = "50"
+        )]
         max_results: usize,
 
         /// Limit references to files changed since revision (default: HEAD)
@@ -271,35 +390,35 @@ pub enum Commands {
     },
 
     /// Install cgrep for Claude Code
-    #[command(name = "install-claude-code")]
+    #[command(name = "install-claude-code", hide = true)]
     InstallClaudeCode,
 
     /// Uninstall cgrep from Claude Code
-    #[command(name = "uninstall-claude-code")]
+    #[command(name = "uninstall-claude-code", hide = true)]
     UninstallClaudeCode,
 
     /// Install cgrep for Codex
-    #[command(name = "install-codex")]
+    #[command(name = "install-codex", hide = true)]
     InstallCodex,
 
     /// Uninstall cgrep from Codex
-    #[command(name = "uninstall-codex")]
+    #[command(name = "uninstall-codex", hide = true)]
     UninstallCodex,
 
     /// Install cgrep for GitHub Copilot
-    #[command(name = "install-copilot")]
+    #[command(name = "install-copilot", hide = true)]
     InstallCopilot,
 
     /// Uninstall cgrep from GitHub Copilot
-    #[command(name = "uninstall-copilot")]
+    #[command(name = "uninstall-copilot", hide = true)]
     UninstallCopilot,
 
     /// Install cgrep for OpenCode
-    #[command(name = "install-opencode")]
+    #[command(name = "install-opencode", hide = true)]
     InstallOpencode,
 
     /// Uninstall cgrep from OpenCode
-    #[command(name = "uninstall-opencode")]
+    #[command(name = "uninstall-opencode", hide = true)]
     UninstallOpencode,
 
     /// Generate shell completions

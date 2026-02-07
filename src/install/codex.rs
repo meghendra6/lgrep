@@ -43,11 +43,11 @@ cgrep dependents src/auth.rs
 
 - `-p, --path <path>` - Search in specific directory
 - `-C, --context <n>` - Context lines around matches (default: 0)
-- `-m, --max-results <n>` - Limit number of results (default: 20)
+- `-m, --limit <n>` - Limit number of results (default: 20)
 - `--no-index` / `--regex` - Force scan mode or regex search
-- `--format json|json2` - Structured output (json2 matches json for now)
+- `--format json|json2` - Structured output
 - `--compact` - Compact JSON output (no pretty formatting)
-- `--semantic` / `--hybrid` - Optional; requires embeddings + index
+- `--mode semantic|hybrid` - Optional; requires embeddings + index
 - `--agent-cache` / `--cache-ttl` - Cache hybrid/semantic sessions
 "#;
 

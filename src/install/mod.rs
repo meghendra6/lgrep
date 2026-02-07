@@ -69,7 +69,7 @@ pub fn print_install_success(agent: &str) {
     println!("  It indexes files locally using tantivy + tree-sitter.");
     println!();
     println!(
-        "  To uninstall: cgrep uninstall-{}",
+        "  To uninstall: cgrep agent uninstall {}",
         agent.to_lowercase().replace(' ', "-")
     );
 }
