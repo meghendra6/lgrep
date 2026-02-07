@@ -101,6 +101,10 @@ Common flags:
     --exclude <pattern>  Exclude pattern
 -q, --quiet              Suppress statistics output
 -f, --fuzzy              Fuzzy BM25 matching (index mode only)
+    --max-chars-per-snippet <n>  Cap snippet size per result
+    --max-context-chars <n>      Cap context size per result
+    --max-total-chars <n>        Cap total returned characters
+    --dedupe-context             Remove duplicated context lines
 ```
 
 Mode selection:
@@ -177,6 +181,15 @@ Search result JSON fields:
 ```
 path, snippet, line
 context_before, context_after
+```
+
+`json2` meta fields include:
+```
+schema_version, query, search_mode, index_mode
+elapsed_ms, files_with_matches, total_matches
+cache_hit, context_pack
+truncated, dropped_results
+max_total_chars, max_chars_per_snippet, max_context_chars, dedupe_context
 ```
 
 ## Embeddings (optional)
@@ -327,6 +340,8 @@ What gets updated:
 Agent usage tips:
 - Use `--format json --compact` or `--format json2 --compact` for structured output.
 - Add `-C` for context lines.
+- Use `--max-total-chars` for hard payload caps.
+- Use `--max-chars-per-snippet` / `--max-context-chars` for per-result trimming.
 - For hybrid/semantic sessions, enable caching with `--agent-cache` and adjust `--cache-ttl`.
 
 ## Troubleshooting

@@ -73,6 +73,10 @@ fn main() -> Result<()> {
             context_pack,
             agent_cache,
             cache_ttl,
+            max_chars_per_snippet,
+            max_total_chars,
+            max_context_chars,
+            dedupe_context,
         } => {
             let config = path
                 .as_deref()
@@ -150,6 +154,10 @@ fn main() -> Result<()> {
                 effective_context_pack,
                 effective_agent_cache,
                 effective_cache_ttl,
+                max_chars_per_snippet,
+                max_total_chars,
+                max_context_chars,
+                dedupe_context,
             )?;
         }
         Commands::Symbols {

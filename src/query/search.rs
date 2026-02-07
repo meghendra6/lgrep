@@ -146,6 +146,15 @@ struct SearchJson2Meta<'a> {
     cache_hit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_pack: Option<usize>,
+    truncated: bool,
+    dropped_results: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_total_chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_chars_per_snippet: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_context_chars: Option<usize>,
+    dedupe_context: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -218,6 +227,20 @@ struct SearchJson2Payload<'a> {
     results: Vec<SearchJson2Result<'a>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SearchOutputBudget {
+    max_chars_per_snippet: Option<usize>,
+    max_total_chars: Option<usize>,
+    max_context_chars: Option<usize>,
+    dedupe_context: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BudgetApplyStats {
+    truncated: bool,
+    dropped_results: usize,
+}
+
 /// Run the search command
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -239,6 +262,10 @@ pub fn run(
     context_pack: Option<usize>,
     use_cache: bool,
     cache_ttl: Option<u64>,
+    max_chars_per_snippet: Option<usize>,
+    max_total_chars: Option<usize>,
+    max_context_chars: Option<usize>,
+    dedupe_context: bool,
 ) -> Result<()> {
     let start_time = Instant::now();
     let use_color = use_colors() && format == OutputFormat::Text;
@@ -358,6 +385,14 @@ pub fn run(
         apply_context_pack(&mut outcome.results, pack_gap);
     }
 
+    let budget = SearchOutputBudget {
+        max_chars_per_snippet,
+        max_total_chars,
+        max_context_chars,
+        dedupe_context: dedupe_context || format == OutputFormat::Json2,
+    };
+    let budget_stats = apply_output_budget(&mut outcome.results, budget);
+
     let elapsed = start_time.elapsed();
 
     // Output based on format
@@ -400,6 +435,12 @@ pub fn run(
                     total_matches: outcome.total_matches,
                     cache_hit: outcome.cache_hit,
                     context_pack: effective_context_pack,
+                    truncated: budget_stats.truncated,
+                    dropped_results: budget_stats.dropped_results,
+                    max_total_chars: budget.max_total_chars,
+                    max_chars_per_snippet: budget.max_chars_per_snippet,
+                    max_context_chars: budget.max_context_chars,
+                    dedupe_context: budget.dedupe_context,
                 },
                 results: json2_results,
             };
@@ -586,6 +627,203 @@ fn apply_context_pack(results: &mut [SearchResult], pack_gap: usize) {
             last_end_by_path.insert(result.path.clone(), end);
         }
     }
+}
+
+fn apply_output_budget(
+    results: &mut Vec<SearchResult>,
+    budget: SearchOutputBudget,
+) -> BudgetApplyStats {
+    let mut stats = BudgetApplyStats::default();
+
+    if budget.dedupe_context {
+        dedupe_context_lines(results);
+    }
+
+    if let Some(max_chars) = budget.max_chars_per_snippet {
+        for result in results.iter_mut() {
+            let original = result.snippet.clone();
+            result.snippet = truncate_with_ellipsis(&result.snippet, max_chars);
+            if result.snippet != original {
+                stats.truncated = true;
+            }
+        }
+    }
+
+    if let Some(max_context_chars) = budget.max_context_chars {
+        for result in results.iter_mut() {
+            let trimmed = trim_result_context_chars(result, max_context_chars);
+            if trimmed {
+                stats.truncated = true;
+            }
+        }
+    }
+
+    if let Some(max_total_chars) = budget.max_total_chars {
+        let total_stats = enforce_total_chars_budget(results, max_total_chars);
+        stats.truncated |= total_stats.truncated;
+        stats.dropped_results = total_stats.dropped_results;
+    }
+
+    stats
+}
+
+fn dedupe_context_lines(results: &mut [SearchResult]) {
+    let mut seen_by_path: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for result in results.iter_mut() {
+        let seen = seen_by_path.entry(result.path.clone()).or_default();
+        result
+            .context_before
+            .retain(|line| seen.insert(line.to_string()));
+        result
+            .context_after
+            .retain(|line| seen.insert(line.to_string()));
+    }
+}
+
+fn trim_result_context_chars(result: &mut SearchResult, max_context_chars: usize) -> bool {
+    let mut remaining = max_context_chars;
+    let mut trimmed = false;
+
+    for line in result.context_before.iter_mut() {
+        let original = line.clone();
+        *line = truncate_with_ellipsis(line, remaining);
+        if *line != original {
+            trimmed = true;
+        }
+        remaining = remaining.saturating_sub(char_count(line));
+    }
+    result.context_before.retain(|line| !line.is_empty());
+
+    for line in result.context_after.iter_mut() {
+        let original = line.clone();
+        *line = truncate_with_ellipsis(line, remaining);
+        if *line != original {
+            trimmed = true;
+        }
+        remaining = remaining.saturating_sub(char_count(line));
+    }
+    result.context_after.retain(|line| !line.is_empty());
+
+    trimmed
+}
+
+fn enforce_total_chars_budget(
+    results: &mut Vec<SearchResult>,
+    max_total_chars: usize,
+) -> BudgetApplyStats {
+    if max_total_chars == 0 {
+        let dropped_results = results.len();
+        results.clear();
+        return BudgetApplyStats {
+            truncated: dropped_results > 0,
+            dropped_results,
+        };
+    }
+
+    let mut used = 0usize;
+    let mut keep = 0usize;
+    let mut truncated = false;
+
+    for result in results.iter_mut() {
+        let mandatory = mandatory_chars(result);
+        if used + mandatory > max_total_chars {
+            truncated = true;
+            break;
+        }
+        used += mandatory;
+
+        let optional_budget = max_total_chars.saturating_sub(used);
+        if optional_budget == 0 {
+            if !result.snippet.is_empty()
+                || !result.context_before.is_empty()
+                || !result.context_after.is_empty()
+            {
+                truncated = true;
+            }
+            result.snippet.clear();
+            result.context_before.clear();
+            result.context_after.clear();
+            keep += 1;
+            continue;
+        }
+
+        let snippet_chars = char_count(&result.snippet);
+        let mut remaining_for_context = optional_budget;
+        if snippet_chars > optional_budget {
+            truncated = true;
+            result.snippet = truncate_with_ellipsis(&result.snippet, optional_budget);
+            result.context_before.clear();
+            result.context_after.clear();
+            keep += 1;
+            used += optional_chars(result);
+            continue;
+        }
+        remaining_for_context = remaining_for_context.saturating_sub(snippet_chars);
+
+        if context_chars(result) > remaining_for_context
+            && trim_result_context_chars(result, remaining_for_context)
+        {
+            truncated = true;
+        }
+
+        used += optional_chars(result);
+        keep += 1;
+    }
+
+    let dropped_results = results.len().saturating_sub(keep);
+    results.truncate(keep);
+    if dropped_results > 0 {
+        truncated = true;
+    }
+
+    BudgetApplyStats {
+        truncated,
+        dropped_results,
+    }
+}
+
+fn mandatory_chars(result: &SearchResult) -> usize {
+    let line_chars = result
+        .line
+        .map(|line| line.to_string().len())
+        .unwrap_or_default();
+    result.path.len() + line_chars
+}
+
+fn optional_chars(result: &SearchResult) -> usize {
+    char_count(&result.snippet) + context_chars(result)
+}
+
+fn context_chars(result: &SearchResult) -> usize {
+    result
+        .context_before
+        .iter()
+        .chain(result.context_after.iter())
+        .map(|line| char_count(line))
+        .sum()
+}
+
+fn truncate_with_ellipsis(input: &str, max_chars: usize) -> String {
+    let total = char_count(input);
+    if total <= max_chars {
+        return input.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars <= 3 {
+        return input.chars().take(max_chars).collect();
+    }
+
+    let keep = max_chars - 3;
+    let mut out: String = input.chars().take(keep).collect();
+    out.push_str("...");
+    out
+}
+
+fn char_count(input: &str) -> usize {
+    input.chars().count()
 }
 
 /// Get context lines around a match
@@ -1641,5 +1879,108 @@ mod tests {
         let b = stable_result_id(&result);
         assert_eq!(a, b);
         assert_eq!(a.len(), 16);
+    }
+
+    fn sample_result(path: &str, line: usize, snippet: &str) -> SearchResult {
+        SearchResult {
+            path: path.to_string(),
+            score: 1.0,
+            snippet: snippet.to_string(),
+            line: Some(line),
+            context_before: vec!["before one".to_string(), "before two".to_string()],
+            context_after: vec!["after one".to_string(), "after two".to_string()],
+            text_score: None,
+            vector_score: None,
+            hybrid_score: None,
+            result_id: None,
+            chunk_start: None,
+            chunk_end: None,
+        }
+    }
+
+    #[test]
+    fn budget_truncates_snippet_chars() {
+        let mut results = vec![sample_result("a.rs", 1, "0123456789abcdef")];
+        let stats = apply_output_budget(
+            &mut results,
+            SearchOutputBudget {
+                max_chars_per_snippet: Some(8),
+                max_total_chars: None,
+                max_context_chars: None,
+                dedupe_context: false,
+            },
+        );
+
+        assert!(stats.truncated);
+        assert_eq!(results[0].snippet, "01234...");
+    }
+
+    #[test]
+    fn budget_truncates_context_chars() {
+        let mut results = vec![sample_result("a.rs", 1, "short")];
+        let stats = apply_output_budget(
+            &mut results,
+            SearchOutputBudget {
+                max_chars_per_snippet: None,
+                max_total_chars: None,
+                max_context_chars: Some(6),
+                dedupe_context: false,
+            },
+        );
+
+        assert!(stats.truncated);
+        let context_total: usize = results[0]
+            .context_before
+            .iter()
+            .chain(results[0].context_after.iter())
+            .map(|line| line.chars().count())
+            .sum();
+        assert!(context_total <= 6);
+    }
+
+    #[test]
+    fn budget_max_total_chars_drops_tail_results() {
+        let mut results = vec![
+            sample_result("a.rs", 1, "alpha"),
+            sample_result("b.rs", 2, "beta"),
+            sample_result("c.rs", 3, "gamma"),
+        ];
+        let stats = apply_output_budget(
+            &mut results,
+            SearchOutputBudget {
+                max_chars_per_snippet: None,
+                max_total_chars: Some(25),
+                max_context_chars: None,
+                dedupe_context: false,
+            },
+        );
+
+        assert!(stats.truncated);
+        assert!(stats.dropped_results >= 1);
+        assert_eq!(results.len(), 3 - stats.dropped_results);
+    }
+
+    #[test]
+    fn budget_dedupes_context_lines_per_path() {
+        let mut first = sample_result("same.rs", 1, "a");
+        first.context_before = vec!["shared".to_string(), "unique-1".to_string()];
+        first.context_after = vec!["shared-after".to_string()];
+        let mut second = sample_result("same.rs", 2, "b");
+        second.context_before = vec!["shared".to_string(), "unique-2".to_string()];
+        second.context_after = vec!["shared-after".to_string(), "tail".to_string()];
+        let mut results = vec![first, second];
+
+        apply_output_budget(
+            &mut results,
+            SearchOutputBudget {
+                max_chars_per_snippet: None,
+                max_total_chars: None,
+                max_context_chars: None,
+                dedupe_context: true,
+            },
+        );
+
+        assert_eq!(results[1].context_before, vec!["unique-2"]);
+        assert_eq!(results[1].context_after, vec!["tail"]);
     }
 }

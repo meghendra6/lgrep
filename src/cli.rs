@@ -129,6 +129,22 @@ pub enum Commands {
         /// Cache TTL in milliseconds (default: 600000 = 10 minutes)
         #[arg(long)]
         cache_ttl: Option<u64>,
+
+        /// Maximum characters per snippet in output
+        #[arg(long)]
+        max_chars_per_snippet: Option<usize>,
+
+        /// Maximum total characters across returned results
+        #[arg(long)]
+        max_total_chars: Option<usize>,
+
+        /// Maximum context characters per result (before+after)
+        #[arg(long)]
+        max_context_chars: Option<usize>,
+
+        /// Remove duplicated context lines across results
+        #[arg(long)]
+        dedupe_context: bool,
     },
 
     /// Search for symbols (functions, classes, etc.)
