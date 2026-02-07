@@ -91,8 +91,12 @@ impl SearchConfig {
 pub struct EmbeddingConfig {
     /// Whether embeddings are enabled (off, auto, on)
     pub enabled: Option<EmbeddingEnabled>,
-    /// Provider type (builtin, dummy)
+    /// Provider type (builtin, command, dummy)
     pub provider: Option<EmbeddingProviderType>,
+    /// Provider inference batch size (builtin fastembed)
+    pub batch_size: Option<usize>,
+    /// Maximum characters per text passed to provider (builtin fastembed)
+    pub max_chars: Option<usize>,
     /// Model identifier for the embedding provider (used by command provider)
     pub model: Option<String>,
     /// Command to execute for command provider
@@ -124,6 +128,16 @@ impl EmbeddingConfig {
     /// Get provider type (defaults to Builtin)
     pub fn provider(&self) -> EmbeddingProviderType {
         self.provider.unwrap_or_default()
+    }
+
+    /// Get provider batch size override (if configured)
+    pub fn batch_size(&self) -> Option<usize> {
+        self.batch_size
+    }
+
+    /// Get provider max chars override (if configured)
+    pub fn max_chars(&self) -> Option<usize> {
+        self.max_chars
     }
 
     /// Get model identifier (defaults to "local-model-id")

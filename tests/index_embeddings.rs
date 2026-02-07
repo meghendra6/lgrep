@@ -150,6 +150,28 @@ fn index_removes_embeddings_for_deleted_files() {
 }
 
 #[test]
+fn index_precompute_handles_large_symbol_batches() {
+    let dir = TempDir::new().unwrap();
+    write_dummy_embeddings_config(dir.path());
+
+    let file_path = dir.path().join("src").join("many.rs");
+    let mut content = String::new();
+    for i in 0..16 {
+        content.push_str(&format!("fn func_{}() {{}}\n", i));
+    }
+    write_file(&file_path, &content);
+
+    run_index(dir.path(), &["--force", "--embeddings", "precompute"]);
+
+    let storage = EmbeddingStorage::open_default(dir.path()).unwrap();
+    let file_path_str = file_path.to_string_lossy().to_string();
+    let symbols = storage.get_symbols_for_path(&file_path_str).unwrap();
+    assert_eq!(symbols.len(), 16);
+    assert!(symbols.iter().any(|s| s.symbol_name == "func_0"));
+    assert!(symbols.iter().any(|s| s.symbol_name == "func_15"));
+}
+
+#[test]
 fn index_removes_embeddings_for_binary_files() {
     let dir = TempDir::new().unwrap();
     write_dummy_embeddings_config(dir.path());

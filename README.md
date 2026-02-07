@@ -267,6 +267,8 @@ agent_cache = true
 
 [embeddings]
 provider = "builtin" # builtin|command|dummy
+batch_size = 4      # lower = less memory, often faster on CPU
+# max_chars = 2000   # trim per-symbol text before embedding
 # command = "embedder"
 # model = "local-model-id"
 ```
@@ -281,6 +283,10 @@ cgrep search "natural language query" --mode hybrid
 ```
 
 If embeddings DB/provider is unavailable, search falls back to BM25-only with a warning.
+
+For large repositories, memory/runtime usually improve by:
+- excluding build/artifact paths during indexing (for example `-e target/ -e node_modules/ -e .venv/`)
+- lowering `[embeddings].batch_size` (recommended range: `2` to `16`)
 
 ## Supported Languages
 
