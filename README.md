@@ -1,319 +1,224 @@
 # cgrep
 
-Local code search with BM25 ranking and AST-aware symbols. Fully local, single
-binary. Includes scan mode fallback and optional hybrid/semantic search.
+Local code search for humans and AI agents.
+
+`cgrep` combines:
+- BM25 full-text search (Tantivy)
+- AST symbol extraction (tree-sitter)
+- optional semantic/hybrid search with embeddings
+- deterministic JSON output for tool/agent workflows
+
+Everything runs locally.
 
 ## Why cgrep
-- Fast BM25 index (Tantivy)
-- AST-aware symbol lookup (tree-sitter)
-- Single binary, no cloud dependencies
-- JSON output for automation and agents
-- Scan mode with regex when you do not want to index
 
-## Quick install
+- Fast search in medium/large codebases
+- Better code-aware lookup than plain grep for symbols/definitions
+- Agent-friendly output (`json2`) and payload controls
+- Works offline after install
+
+## Install
+
 ```bash
 cargo install --path .
 
-# or build from source:
+# or build manually
 cargo build --release
 cp target/release/cgrep ~/.local/bin/
 ```
 
-## Quick start
+## Quick Start (Human)
+
 ```bash
-# Build the BM25 index (embeddings are off by default)
+# 1) Build index (recommended for repeated searches)
 cgrep index
 
-# Full-text search
+# 2) Basic search
 cgrep search "authentication flow"
 
-# Search with context and file type filter
-cgrep search "auth middleware" -C 2 -t typescript
+# 3) Narrow by language/path
+cgrep search "token refresh" -t rust -p src/
 
-# Symbol lookups
+# 4) Search only changed files
+cgrep search "retry logic" --changed
+
+# 5) Symbol/navigation commands
 cgrep symbols UserService -T class
-cgrep definition handleAuth
-cgrep callers validateToken
-cgrep references MyClass
+cgrep definition handle_auth
+cgrep callers validate_token
+cgrep references UserService
 
-# File dependency search
+# 6) Dependency lookup
 cgrep dependents src/auth.rs
 ```
 
-## When to use what
-- `cgrep index` then `cgrep search` for repeated searches or large repos.
-- `cgrep search --mode keyword` is the default and works with index/scan fallback.
-- `cgrep search --mode semantic|hybrid` when embeddings are configured.
-- `cgrep agent locate` + `cgrep agent expand` for AI agent loops.
-- `cgrep symbols`, `definition`, `callers`, `references` when you know the symbol name.
-- `cgrep dependents` to find files importing a given file.
-- `cgrep watch` to keep the index fresh while you code.
+## Quick Start (AI Agent)
 
-## Commands
+Agent workflow is intentionally 2-stage:
 
-| Command | Description |
-|--------|-------------|
-| `cgrep search <query>` (`s`) | Full-text search (BM25), or hybrid/semantic if enabled |
-| `cgrep agent locate <query>` | Agent stage 1: minimal candidate retrieval (`json2`) |
-| `cgrep agent expand --id <id>...` | Agent stage 2: expand selected IDs with context (`json2`) |
-| `cgrep agent install <provider>` | Install cgrep instructions for `claude-code|codex|copilot|opencode` |
-| `cgrep agent uninstall <provider>` | Remove cgrep instructions for provider |
-| `cgrep symbols <name>` | Search symbols by name |
-| `cgrep definition <name>` (`def`) | Find symbol definition location |
-| `cgrep callers <function>` | Find callers of a function |
-| `cgrep references <name>` (`refs`) | Find symbol references |
-| `cgrep dependents <file>` (`deps`) | Find files that depend on a file |
-| `cgrep index` | Build or rebuild the search index |
-| `cgrep watch` | Watch for file changes and update index |
-| `cgrep completions <shell>` | Generate shell completions |
+1. `locate`: return small candidate set
+2. `expand`: fetch richer context only for selected IDs
 
-## Search modes
-
-`cgrep search` supports three modes:
-
-- `keyword` (default): BM25. Uses the index when available and falls back to scan mode.
-- `semantic`: embeddings-based ranking (experimental; requires an index).
-- `hybrid`: BM25 + embeddings (experimental; requires an index).
-
-Examples:
 ```bash
-cgrep search "token refresh" --mode keyword
-cgrep search "token refresh" --mode semantic
-cgrep search "token refresh" --mode hybrid
-```
+# Stage 1: locate (always json2)
+cgrep agent locate "where token validation happens" --changed --budget balanced --compact
 
-Legacy aliases (`--keyword`, `--semantic`, `--hybrid`) are deprecated.
+# Example: pick first ID (requires jq)
+ID=$(cgrep agent locate "token validation" --compact | jq -r '.results[0].id')
+
+# Stage 2: expand selected IDs
+cgrep agent expand --id "$ID" -C 8 --compact
+```
 
 Notes:
-- Hybrid/semantic require a BM25 index; there is no scan fallback.
-- If the embedding database or provider is unavailable, hybrid/semantic return BM25-only results with a warning.
+- `agent locate/expand` are optimized for low-token loops.
+- `agent locate` applies caching + payload minimization defaults.
 
-## Search flags
+## Command Overview
 
-Common flags:
-```
--p, --path <path>        Path to search in (default: current directory)
--m, --limit <n>          Maximum results (default: 20)
--C, --context <n>        Context lines before/after matches
--t, --type <type>        File type filter (rust, ts, python, ...)
--g, --glob <pattern>     Glob filter (e.g. "src/**/*.rs")
-    --exclude <pattern>  Exclude pattern
-    --changed [<rev>]    Limit to files changed since revision (default: HEAD)
-    --budget <preset>    tight|balanced|full|off
-    --profile <name>     human|agent|fast
--q, --quiet              Suppress statistics output
-```
+| Command | Description |
+|---|---|
+| `cgrep search <query>` (`s`) | Full-text search |
+| `cgrep agent locate <query>` | Agent stage 1 candidate retrieval |
+| `cgrep agent expand --id <id>...` | Agent stage 2 context expansion |
+| `cgrep symbols <name>` | Symbol search |
+| `cgrep definition <name>` (`def`) | Definition lookup |
+| `cgrep callers <function>` | Caller lookup |
+| `cgrep references <name>` (`refs`) | References lookup |
+| `cgrep dependents <file>` (`deps`) | Reverse dependency lookup |
+| `cgrep index` | Build/rebuild index |
+| `cgrep watch` | Reindex on file changes |
+| `cgrep agent install <provider>` | Install agent instructions |
+| `cgrep agent uninstall <provider>` | Uninstall agent instructions |
+| `cgrep completions <shell>` | Generate shell completions |
 
-Mode selection:
-```
-    --mode <mode>        keyword|semantic|hybrid
-    --regex              Regex search (scan mode)
-    --case-sensitive     Case-sensitive scan mode
-```
+## Search Guide
 
-Advanced flags:
-```
-    --help-advanced               Print advanced search options
-    --no-index           Force scan mode (no index)
-    --fuzzy              Fuzzy BM25 matching (index mode only)
-    --agent-cache        Enable search-result cache
-    --cache-ttl <ms>     Cache TTL in milliseconds
-    --context-pack <n>   Merge overlapping/adjacent context windows
-    --max-chars-per-snippet <n>  Manual snippet cap
-    --max-context-chars <n>      Manual context cap
-    --max-total-chars <n>        Manual total payload cap
-```
-Note: In keyword mode, if no index exists, cgrep falls back to scan mode.
+### Core Options (recommended day-to-day)
 
-## Command-specific flags
-
-Symbols:
-```
--T, --type <type>        Symbol kind (function, class, ...)
--l, --lang <lang>        Language filter
--t, --file-type <type>   File type filter
--g, --glob <pattern>     Glob filter
-    --exclude <pattern>  Exclude pattern
-    --changed [<rev>]    Limit to files changed since revision (default: HEAD)
--q, --quiet              Suppress statistics output
+```bash
+cgrep search "<query>" \
+  -p <path> \
+  -m <limit> \
+  -C <context> \
+  -t <language> \
+  --glob <pattern> \
+  --exclude <pattern> \
+  --changed [REV] \
+  --budget tight|balanced|full|off \
+  --profile human|agent|fast
 ```
 
-References:
-```
--p, --path <path>        Path to search in
--m, --limit <n>          Maximum results (default: 50)
-    --changed [<rev>]    Limit to files changed since revision (default: HEAD)
+Short examples:
+
+```bash
+cgrep search "jwt decode" -m 10
+cgrep search "retry backoff" --changed
+cgrep search "controller middleware" --budget tight
 ```
 
-Index:
-```
--p, --path <path>        Path to index
--f, --force              Force full reindex
--e, --exclude <pattern>  Exclude path/pattern (repeatable)
-    --high-memory        Use a 1GiB writer budget for faster indexing
-    --embeddings <mode>  auto|precompute|off (default: off)
-    --embeddings-force   Force regenerate embeddings
+### Modes
+
+```bash
+cgrep search "token refresh" --mode keyword   # default
+cgrep search "token refresh" --mode semantic  # requires embeddings + index
+cgrep search "token refresh" --mode hybrid    # requires embeddings + index
 ```
 
-Watch:
-```
-    --debounce <seconds>  Debounce interval for reindex (default: 2)
+Mode notes:
+- `keyword`: uses index when present, otherwise scan fallback
+- `semantic/hybrid`: require index; no scan fallback
+
+Deprecated compatibility aliases:
+- `--keyword`, `--semantic`, `--hybrid` (use `--mode` instead)
+
+### Budget Presets
+
+`--budget` reduces option noise by replacing multiple per-field limits:
+
+| Preset | Intent |
+|---|---|
+| `tight` | Minimal payload / strict token control |
+| `balanced` | Default agent-oriented balance |
+| `full` | More context, larger payload |
+| `off` | No preset budget limits |
+
+### Profiles
+
+| Profile | Typical use |
+|---|---|
+| `human` | readable interactive output |
+| `agent` | structured + token-efficient defaults |
+| `fast` | quick exploratory search |
+
+### Advanced Search Options
+
+```bash
+cgrep search --help-advanced
 ```
 
-## Output formats
+Examples of advanced flags:
+- `--no-index`, `--fuzzy`
+- `--agent-cache`, `--cache-ttl`
+- `--context-pack`
+- `--max-chars-per-snippet`, `--max-context-chars`, `--max-total-chars`
+
+## Output Formats
 
 Global flags:
-```
+
+```bash
 --format text|json|json2
 --compact
 ```
 
-- `text`: human-readable output
-- `json`: array of results
-- `json2`: structured object (`meta` + `results`) for AI agent workflows
-- `--compact`: compact JSON output (no pretty formatting)
+Format summary:
+- `text`: human-readable
+- `json`: simple array/object payload
+- `json2`: structured payload for automation/agents
 
-Search result JSON fields:
-```
-path, snippet, line
-context_before, context_after
-```
+`search --format json2` shape:
+- `meta`: query/mode/timing/truncation/cache metadata
+- `results`: deterministic list with stable `id`, path/snippet/lines/scores
 
-`json2` meta fields include:
-```
-schema_version, query, search_mode, index_mode
-elapsed_ms, files_with_matches, total_matches
-cache_hit, context_pack
-truncated, dropped_results
-max_total_chars, max_chars_per_snippet, max_context_chars, dedupe_context
-path_alias, suppress_boilerplate, changed_rev, path_aliases
-```
+## Symbols / References Examples
 
-## Embeddings (optional)
+```bash
+# Symbols
+cgrep symbols AuthService -T class -t typescript
 
-Embeddings are only used for semantic/hybrid search. By default, `cgrep index`
-runs with embeddings disabled (`--embeddings off`).
+# References in changed files only
+cgrep references validate_token --changed
 
-Enable during indexing:
-- `cgrep index --embeddings auto`: best-effort (continues without embeddings if the provider is unavailable).
-- `cgrep index --embeddings precompute`: generate embeddings for all indexed files (fails if the provider is unavailable).
-- `cgrep index --embeddings-force`: clear and regenerate embeddings (useful when changing the model/provider).
-
-Embeddings are stored at `.cgrep/embeddings.sqlite` under the indexed root.
-
-### Embedding provider configuration
-
-Embeddings are generated using the provider configured in `.cgreprc.toml`:
-
-```toml
-[embeddings]
-provider = "builtin"  # builtin|command|dummy
-
-# command provider
-command = "embedder"
-model = "local-model-id"
-
-# symbol-level tuning (optional)
-max_symbols_per_file = 500
-symbol_preview_lines = 12
-symbol_max_chars = 1200
-# symbol_kinds = ["function", "class", "method"]
+# Limit reference payload
+cgrep references validate_token -m 20
 ```
 
-`provider = "dummy"` is intended for tests/dev only (returns zero vectors).
-`chunk_lines` and `chunk_overlap` are deprecated and ignored (embeddings are symbol-level).
+## Indexing & Watch
 
-Note: the builtin FastEmbed provider is not available on `x86_64-apple-darwin` builds.
-Use `provider = "command"` or `provider = "dummy"` on that target.
+```bash
+# Rebuild index
+cgrep index --force
 
-Linux note: the builtin provider uses a dynamically loaded ONNX Runtime library.
-Install a compatible `libonnxruntime` and set `ORT_DYLIB_PATH` (or ensure it is
-discoverable via system library paths/`LD_LIBRARY_PATH`), or use
-`provider = "command"` / `provider = "dummy"`.
+# Exclude paths while indexing
+cgrep index -e vendor/ -e dist/
 
-For the builtin provider, you can tune FastEmbed via environment variables:
-```
-FASTEMBED_MODEL=minilm
-FASTEMBED_BATCH_SIZE=512
-FASTEMBED_MAX_CHARS=2000
-FASTEMBED_NORMALIZE=true
+# Embeddings mode
+cgrep index --embeddings auto
+cgrep index --embeddings precompute
+
+# Watch mode
+cgrep watch --debounce 2
 ```
 
-### Using embeddings in search
+Behavior notes:
+- Index lives under `.cgrep/`
+- Search from subdirectories reuses nearest parent index
+- Indexing ignores `.gitignore`; scan mode respects `.gitignore`
 
-If `.cgrep/embeddings.sqlite` exists, `cgrep search --mode semantic|hybrid` uses it
-for embedding-based scoring. Query embeddings are generated using the
-configured provider. If the DB or provider is unavailable, it falls back to
-BM25-only results with a warning.
+## Agent Integration Install
 
-## Indexing behavior
-
-- Index is stored under `.cgrep/`.
-- Search looks for the nearest parent `.cgrep` directory and uses that index
-  when you run it from a subdirectory (it prints a notice when this happens).
-- Results are scoped to the current directory by default; use `-p` to change the scope.
-- Incremental indexing uses BLAKE3 hashes to skip unchanged files.
-- Binary files are skipped.
-- Large files are chunked (~1MB per document) to limit memory use.
-- Indexing does not respect `.gitignore`; use `--exclude` or `[index].exclude_paths`
-  to skip paths. Scan mode respects `.gitignore`.
-- `cgrep watch` debounces file events (default: 2s) and rate-limits reindexing
-  (minimum 5s between reindexes).
-- `cgrep symbols` uses the index (when available) to narrow candidate files,
-  falling back to a full scan if no index exists.
-
-## Configuration
-
-Config file locations (first wins):
-1) `.cgreprc.toml` in the project root
-2) `~/.config/cgrep/config.toml`
-
-Currently used fields:
-```toml
-max_results = 20
-exclude_patterns = ["target/**", "node_modules/**"]
-
-[index]
-exclude_paths = ["vendor/", "dist/"]
-
-[embeddings]
-enabled = "auto" # off|auto|on
-provider = "builtin"
-# provider = "command"
-# command = "embedder"
-# model = "local-model-id"
-max_file_bytes = 2000000
-max_symbols_per_file = 500
-symbol_preview_lines = 12
-symbol_max_chars = 1200
-# symbol_kinds = ["function", "class", "method"]
-```
-Notes:
-- `max_results` is used as the default for search when `-m/--limit` is not provided.
-- `[index].exclude_paths` is applied during indexing and combined with
-  `cgrep index --exclude` (CLI flags are applied first).
-
-Parsed but only partially applied:
-- `index.max_file_size`
-- `[search]` hybrid weights/candidate settings (default_mode is applied)
-- `[cache]` `enabled` (ttl_ms is used as default when `--cache-ttl` is omitted)
-- `[profile.*]` advanced settings outside search
-
-## Supported languages
-
-AST symbol extraction (tree-sitter):
-- typescript, tsx, javascript, python, rust, go, c, cpp, java, ruby
-
-Full-text indexing/scanning (file extensions):
-- rs, ts, tsx, js, jsx, py, go, java, c, cpp, h, hpp, cs, rb, php, swift
-- kt, kts, scala, lua, md, txt, json, yaml, toml
-
-Files outside these extensions are ignored.
-
-## Agent integrations
-
-Install local instruction files so your agent uses cgrep for code search:
-```
+```bash
 cgrep agent install claude-code
 cgrep agent install codex
 cgrep agent install copilot
@@ -321,40 +226,82 @@ cgrep agent install opencode
 ```
 
 Uninstall:
-```
+
+```bash
 cgrep agent uninstall claude-code
 cgrep agent uninstall codex
 cgrep agent uninstall copilot
 cgrep agent uninstall opencode
 ```
 
-What gets updated:
-- Claude Code: `~/.claude/CLAUDE.md`
-- Codex: `~/.codex/AGENTS.md`
-- GitHub Copilot: `.github/instructions/cgrep.instructions.md` and optional append to `.github/copilot-instructions.md`
-- OpenCode: `~/.config/opencode/tool/cgrep.ts` (you may need to add it to OpenCode config)
+Legacy commands (`install-...`, `uninstall-...`) still work as deprecated compatibility paths.
 
-Agent usage tips:
-- Use `cgrep agent locate "<query>"` first, then `cgrep agent expand --id ...`.
-- `agent locate` defaults to `json2`, token-efficient formatting, and caching.
-- Use `--budget tight|balanced|full|off` to control payload size quickly.
+## Configuration
+
+Config precedence:
+1. `<repo>/.cgreprc.toml`
+2. `~/.config/cgrep/config.toml`
+
+Example:
+
+```toml
+max_results = 20
+exclude_patterns = ["target/**", "node_modules/**"]
+
+[search]
+default_mode = "keyword"
+
+[cache]
+ttl_ms = 600000
+
+[index]
+exclude_paths = ["vendor/", "dist/"]
+
+[profile.agent]
+format = "json2"
+max_results = 50
+context = 6
+context_pack = 8
+mode = "keyword"
+agent_cache = true
+
+[embeddings]
+provider = "builtin" # builtin|command|dummy
+# command = "embedder"
+# model = "local-model-id"
+```
+
+## Embeddings
+
+Embeddings are optional and used by `--mode semantic|hybrid`.
+
+```bash
+cgrep index --embeddings auto
+cgrep search "natural language query" --mode hybrid
+```
+
+If embeddings DB/provider is unavailable, search falls back to BM25-only with a warning.
+
+## Supported Languages
+
+AST symbol extraction:
+- typescript, tsx, javascript, python, rust, go, c, cpp, java, ruby
+
+Index/scan extensions:
+- rs, ts, tsx, js, jsx, py, go, java, c, cpp, h, hpp, cs, rb, php, swift
+- kt, kts, scala, lua, md, txt, json, yaml, toml
 
 ## Troubleshooting
 
-- Index not found or hybrid/semantic error: run `cgrep index` (required for `--mode semantic|hybrid`).
-- Results missing when running from a subdirectory: use `-p` to change the search scope.
-- Hybrid/semantic returns BM25-only results: ensure `.cgrep/embeddings.sqlite` exists and your embedding provider is configured.
-- Symbols not found for a language: only the AST-supported languages above provide symbol extraction.
-
-## Known limitations
-
-- `json2` schema currently focuses on `search`; other commands still use simpler JSON payloads.
-- `[search]` weight/candidate tuning and `index.max_file_size` are not wired yet.
-- `[cache].enabled` and non-search profile behaviors are not fully wired yet.
+- `semantic/hybrid` returns error or weak results: run `cgrep index` and verify embeddings config.
+- Running from subdirectory misses files: set explicit scope with `-p`.
+- Too much output for agents: use `--budget tight` or `--profile agent`.
+- No index present: keyword mode auto-falls back to scan; semantic/hybrid do not.
 
 ## Development
 
 ```bash
 cargo build
 cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 ```
