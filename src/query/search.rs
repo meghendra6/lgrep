@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use regex::{Regex, RegexBuilder};
-use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
@@ -20,6 +20,7 @@ use tantivy::{
 
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
+use crate::query::changed_files::ChangedFiles;
 use cgrep::cache::{CacheKey, SearchCache};
 use cgrep::config::{Config, EmbeddingProviderType};
 use cgrep::embedding::{
@@ -40,7 +41,7 @@ use cgrep::utils::INDEX_DIR;
 const DEFAULT_CACHE_TTL_MS: u64 = 600_000; // 10 minutes
 
 /// Search result for internal use and text output
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub path: String,
     pub score: f32,
@@ -134,6 +135,14 @@ struct SearchOutcome {
     cache_hit: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KeywordCachePayload {
+    results: Vec<SearchResult>,
+    files_with_matches: usize,
+    total_matches: usize,
+    mode: String,
+}
+
 #[derive(Debug, Serialize)]
 struct SearchJson2Meta<'a> {
     schema_version: &'a str,
@@ -155,19 +164,25 @@ struct SearchJson2Meta<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_context_chars: Option<usize>,
     dedupe_context: bool,
+    path_alias: bool,
+    suppress_boilerplate: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_rev: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_aliases: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Serialize)]
-struct SearchJson2Result<'a> {
+struct SearchJson2Result {
     id: String,
-    path: &'a str,
+    path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     start_line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end_line: Option<usize>,
-    snippet: &'a str,
+    snippet: String,
     score: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     text_score: Option<f32>,
@@ -176,13 +191,13 @@ struct SearchJson2Result<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     hybrid_score: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    context_before: Option<&'a [String]>,
+    context_before: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    context_after: Option<&'a [String]>,
+    context_after: Option<Vec<String>>,
 }
 
-impl<'a> SearchJson2Result<'a> {
-    fn from_result(result: &'a SearchResult, include_context: bool) -> Self {
+impl SearchJson2Result {
+    fn from_result(result: &SearchResult, include_context: bool, path_value: Option<&str>) -> Self {
         let (start_line, end_line) = if let Some(line) = result.line {
             let start = line.saturating_sub(result.context_before.len());
             let end = line + result.context_after.len();
@@ -198,22 +213,22 @@ impl<'a> SearchJson2Result<'a> {
 
         Self {
             id,
-            path: result.path.as_str(),
+            path: path_value.unwrap_or(result.path.as_str()).to_string(),
             line: result.line,
             start_line,
             end_line,
-            snippet: result.snippet.as_str(),
+            snippet: result.snippet.clone(),
             score: result.score,
             text_score: result.text_score,
             vector_score: result.vector_score,
             hybrid_score: result.hybrid_score,
             context_before: if include_context && !result.context_before.is_empty() {
-                Some(result.context_before.as_slice())
+                Some(result.context_before.clone())
             } else {
                 None
             },
             context_after: if include_context && !result.context_after.is_empty() {
-                Some(result.context_after.as_slice())
+                Some(result.context_after.clone())
             } else {
                 None
             },
@@ -224,7 +239,7 @@ impl<'a> SearchJson2Result<'a> {
 #[derive(Debug, Serialize)]
 struct SearchJson2Payload<'a> {
     meta: SearchJson2Meta<'a>,
-    results: Vec<SearchJson2Result<'a>>,
+    results: Vec<SearchJson2Result>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -233,6 +248,7 @@ struct SearchOutputBudget {
     max_total_chars: Option<usize>,
     max_context_chars: Option<usize>,
     dedupe_context: bool,
+    suppress_boilerplate: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -251,6 +267,7 @@ pub fn run(
     file_type: Option<&str>,
     glob_pattern: Option<&str>,
     exclude_pattern: Option<&str>,
+    changed: Option<&str>,
     quiet: bool,
     fuzzy: bool,
     no_index: bool,
@@ -266,6 +283,8 @@ pub fn run(
     max_total_chars: Option<usize>,
     max_context_chars: Option<usize>,
     dedupe_context: bool,
+    path_alias: bool,
+    suppress_boilerplate: bool,
 ) -> Result<()> {
     let start_time = Instant::now();
     let use_color = use_colors() && format == OutputFormat::Text;
@@ -294,6 +313,9 @@ pub fn run(
         .iter()
         .filter_map(|p| CompiledGlob::new(p.as_str()))
         .collect();
+    let changed_filter = changed
+        .map(|rev| ChangedFiles::from_scope(&search_root, rev))
+        .transpose()?;
 
     if using_parent {
         eprintln!("Using index from: {}", index_root.display());
@@ -322,6 +344,7 @@ pub fn run(
 
     // Check for hybrid search mode
     let effective_search_mode = search_mode.unwrap_or(HybridSearchMode::Keyword);
+    let effective_cache_ttl = cache_ttl.unwrap_or(DEFAULT_CACHE_TTL_MS);
 
     let mut outcome = match effective_search_mode {
         HybridSearchMode::Semantic | HybridSearchMode::Hybrid => {
@@ -334,50 +357,38 @@ pub fn run(
                 effective_max_results,
                 context,
                 file_type,
+                glob_pattern,
+                exclude_pattern,
                 compiled_glob.as_ref(),
                 compiled_exclude.as_ref(),
                 &config_exclude_patterns,
+                changed_filter.as_ref(),
                 effective_search_mode,
                 use_cache,
-                cache_ttl.unwrap_or(DEFAULT_CACHE_TTL_MS),
+                effective_cache_ttl,
             )?
         }
-        HybridSearchMode::Keyword => {
-            // Standard BM25 or scan search
-            if requested_mode == IndexMode::Index && index_path.exists() {
-                index_search(
-                    query,
-                    &index_root,
-                    &search_root,
-                    effective_max_results,
-                    context,
-                    file_type,
-                    compiled_glob.as_ref(),
-                    compiled_exclude.as_ref(),
-                    &config_exclude_patterns,
-                    fuzzy,
-                )?
-            } else {
-                if requested_mode == IndexMode::Index && !index_path.exists() {
-                    eprintln!(
-                        "Index not found at {}. Falling back to scan mode.",
-                        index_path.display()
-                    );
-                }
-                scan_search(
-                    query,
-                    &search_root,
-                    effective_max_results,
-                    context,
-                    file_type,
-                    compiled_glob.as_ref(),
-                    compiled_exclude.as_ref(),
-                    &config_exclude_patterns,
-                    compiled_regex.as_ref(),
-                    case_sensitive,
-                )?
-            }
-        }
+        HybridSearchMode::Keyword => keyword_search(
+            query,
+            &index_root,
+            &search_root,
+            &index_path,
+            effective_max_results,
+            context,
+            file_type,
+            glob_pattern,
+            exclude_pattern,
+            compiled_glob.as_ref(),
+            compiled_exclude.as_ref(),
+            &config_exclude_patterns,
+            changed_filter.as_ref(),
+            requested_mode,
+            fuzzy,
+            compiled_regex.as_ref(),
+            case_sensitive,
+            use_cache,
+            effective_cache_ttl,
+        )?,
     };
 
     let effective_context_pack = context_pack.filter(|v| *v > 0);
@@ -390,8 +401,15 @@ pub fn run(
         max_total_chars,
         max_context_chars,
         dedupe_context: dedupe_context || format == OutputFormat::Json2,
+        suppress_boilerplate: suppress_boilerplate || format == OutputFormat::Json2,
     };
     let budget_stats = apply_output_budget(&mut outcome.results, budget);
+    let (path_alias_lookup, path_aliases_meta) = if format == OutputFormat::Json2 && path_alias {
+        let (lookup, aliases) = build_path_aliases(&outcome.results);
+        (Some(lookup), Some(aliases))
+    } else {
+        (None, None)
+    };
 
     let elapsed = start_time.elapsed();
 
@@ -415,10 +433,16 @@ pub fn run(
             }
         }
         OutputFormat::Json2 => {
-            let json2_results: Vec<SearchJson2Result<'_>> = outcome
+            let json2_results: Vec<SearchJson2Result> = outcome
                 .results
                 .iter()
-                .map(|result| SearchJson2Result::from_result(result, !compact))
+                .map(|result| {
+                    let alias = path_alias_lookup
+                        .as_ref()
+                        .and_then(|lookup| lookup.get(&result.path))
+                        .map(|s| s.as_str());
+                    SearchJson2Result::from_result(result, !compact, alias)
+                })
                 .collect();
 
             let payload = SearchJson2Payload {
@@ -441,6 +465,10 @@ pub fn run(
                     max_chars_per_snippet: budget.max_chars_per_snippet,
                     max_context_chars: budget.max_context_chars,
                     dedupe_context: budget.dedupe_context,
+                    path_alias,
+                    suppress_boilerplate: budget.suppress_boilerplate,
+                    changed_rev: changed_filter.as_ref().map(|f| f.rev()),
+                    path_aliases: path_aliases_meta,
                 },
                 results: json2_results,
             };
@@ -635,6 +663,10 @@ fn apply_output_budget(
 ) -> BudgetApplyStats {
     let mut stats = BudgetApplyStats::default();
 
+    if budget.suppress_boilerplate && suppress_repeated_boilerplate(results) {
+        stats.truncated = true;
+    }
+
     if budget.dedupe_context {
         dedupe_context_lines(results);
     }
@@ -679,6 +711,82 @@ fn dedupe_context_lines(results: &mut [SearchResult]) {
             .context_after
             .retain(|line| seen.insert(line.to_string()));
     }
+}
+
+fn suppress_repeated_boilerplate(results: &mut [SearchResult]) -> bool {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for result in results.iter() {
+        let mut lines =
+            Vec::with_capacity(1 + result.context_before.len() + result.context_after.len());
+        lines.push(result.snippet.as_str());
+        lines.extend(result.context_before.iter().map(String::as_str));
+        lines.extend(result.context_after.iter().map(String::as_str));
+
+        for line in lines {
+            if is_boilerplate_line(line) {
+                *counts.entry(normalize_boilerplate_line(line)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut changed = false;
+    for result in results.iter_mut() {
+        if is_repeated_boilerplate(&result.snippet, &counts) {
+            result.snippet = "[boilerplate suppressed]".to_string();
+            changed = true;
+        }
+
+        let before_len = result.context_before.len();
+        result
+            .context_before
+            .retain(|line| !is_repeated_boilerplate(line, &counts));
+        changed |= before_len != result.context_before.len();
+
+        let after_len = result.context_after.len();
+        result
+            .context_after
+            .retain(|line| !is_repeated_boilerplate(line, &counts));
+        changed |= after_len != result.context_after.len();
+    }
+
+    changed
+}
+
+fn is_repeated_boilerplate(line: &str, counts: &HashMap<String, usize>) -> bool {
+    if !is_boilerplate_line(line) {
+        return false;
+    }
+    let key = normalize_boilerplate_line(line);
+    counts.get(&key).copied().unwrap_or(0) > 1
+}
+
+fn normalize_boilerplate_line(line: &str) -> String {
+    line.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn is_boilerplate_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_lowercase();
+    lower.starts_with("use ")
+        || lower.starts_with("pub use ")
+        || lower.starts_with("import ")
+        || lower.starts_with("from ")
+        || lower.starts_with("#include")
+        || lower.starts_with("package ")
+        || lower.starts_with("namespace ")
+        || lower.starts_with("module ")
+        || lower.starts_with("export ")
+        || lower.starts_with("//")
+        || lower.starts_with("/*")
+        || lower.starts_with('*')
+        || matches!(trimmed, "{" | "}" | "(" | ")" | "[" | "]")
 }
 
 fn trim_result_context_chars(result: &mut SearchResult, max_context_chars: usize) -> bool {
@@ -826,6 +934,45 @@ fn char_count(input: &str) -> usize {
     input.chars().count()
 }
 
+fn build_path_aliases(
+    results: &[SearchResult],
+) -> (HashMap<String, String>, BTreeMap<String, String>) {
+    let mut unique_paths = BTreeSet::new();
+    for result in results {
+        unique_paths.insert(result.path.clone());
+    }
+
+    let mut lookup = HashMap::new();
+    let mut aliases = BTreeMap::new();
+
+    for (idx, path) in unique_paths.into_iter().enumerate() {
+        let alias = format!("p{}", idx + 1);
+        lookup.insert(path.clone(), alias.clone());
+        aliases.insert(alias, path);
+    }
+
+    (lookup, aliases)
+}
+
+fn normalize_query(query: &str, lowercase: bool, collapse_spaces: bool) -> String {
+    let normalized = if collapse_spaces {
+        query.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        query.to_string()
+    };
+    if lowercase {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
+fn index_fingerprint(index_root: &Path) -> Option<String> {
+    let metadata_path = index_root.join(INDEX_DIR).join("metadata.json");
+    let bytes = fs::read(&metadata_path).ok()?;
+    Some(blake3::hash(&bytes).to_hex()[..16].to_string())
+}
+
 /// Get context lines around a match
 fn get_context_lines(
     file_path: &std::path::Path,
@@ -895,6 +1042,7 @@ fn collect_index_candidates(
     compiled_glob: Option<&CompiledGlob>,
     compiled_exclude: Option<&CompiledGlob>,
     config_exclude_patterns: &[CompiledGlob],
+    changed_filter: Option<&ChangedFiles>,
     fuzzy: bool,
 ) -> Result<Vec<IndexCandidate>> {
     let index_path = index_root.join(INDEX_DIR);
@@ -982,6 +1130,11 @@ fn collect_index_candidates(
         let Some(display_path) = scoped_display_path(&full_path, search_root) else {
             continue;
         };
+        if let Some(filter) = changed_filter {
+            if !filter.matches_rel_path(&display_path) {
+                continue;
+            }
+        }
 
         if !matches_file_type(&display_path, file_type) {
             continue;
@@ -1056,6 +1209,142 @@ fn collect_index_candidates(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn keyword_search(
+    query: &str,
+    index_root: &Path,
+    search_root: &Path,
+    index_path: &Path,
+    max_results: usize,
+    context: usize,
+    file_type: Option<&str>,
+    glob_pattern: Option<&str>,
+    exclude_pattern: Option<&str>,
+    compiled_glob: Option<&CompiledGlob>,
+    compiled_exclude: Option<&CompiledGlob>,
+    config_exclude_patterns: &[CompiledGlob],
+    changed_filter: Option<&ChangedFiles>,
+    requested_mode: IndexMode,
+    fuzzy: bool,
+    regex: Option<&Regex>,
+    case_sensitive: bool,
+    use_cache: bool,
+    cache_ttl_ms: u64,
+) -> Result<SearchOutcome> {
+    let use_index = requested_mode == IndexMode::Index && index_path.exists();
+    if requested_mode == IndexMode::Index && !index_path.exists() {
+        eprintln!(
+            "Index not found at {}. Falling back to scan mode.",
+            index_path.display()
+        );
+    }
+    let effective_mode = if use_index {
+        IndexMode::Index
+    } else {
+        IndexMode::Scan
+    };
+
+    let normalized_query = if regex.is_some() {
+        query.to_string()
+    } else {
+        normalize_query(
+            query,
+            effective_mode == IndexMode::Index || !case_sensitive,
+            effective_mode == IndexMode::Index,
+        )
+    };
+    let changed_component = changed_filter
+        .map(|f| format!("{}:{}", f.rev(), f.signature()))
+        .filter(|s| !s.is_empty());
+    let cache_key = CacheKey {
+        query: normalized_query,
+        mode: if effective_mode == IndexMode::Index {
+            "keyword:index".to_string()
+        } else {
+            "keyword:scan".to_string()
+        },
+        max_results,
+        context,
+        file_type: file_type.map(str::to_string),
+        glob: glob_pattern.map(str::to_string),
+        exclude: exclude_pattern.map(str::to_string),
+        profile: None,
+        index_hash: index_fingerprint(index_root),
+        embedding_model: None,
+        search_root: Some(search_root.to_string_lossy().to_string()),
+        changed: changed_component,
+    };
+
+    if use_cache {
+        if let Ok(cache) = SearchCache::new(index_root, cache_ttl_ms) {
+            if let Ok(Some(entry)) = cache.get::<KeywordCachePayload>(&cache_key) {
+                return Ok(SearchOutcome {
+                    results: entry.data.results,
+                    files_with_matches: entry.data.files_with_matches,
+                    total_matches: entry.data.total_matches,
+                    mode: parse_index_mode(&entry.data.mode),
+                    cache_hit: true,
+                });
+            }
+        }
+    }
+
+    let outcome = if use_index {
+        index_search(
+            query,
+            index_root,
+            search_root,
+            max_results,
+            context,
+            file_type,
+            compiled_glob,
+            compiled_exclude,
+            config_exclude_patterns,
+            changed_filter,
+            fuzzy,
+        )?
+    } else {
+        scan_search(
+            query,
+            search_root,
+            max_results,
+            context,
+            file_type,
+            compiled_glob,
+            compiled_exclude,
+            config_exclude_patterns,
+            changed_filter,
+            regex,
+            case_sensitive,
+        )?
+    };
+
+    if use_cache {
+        if let Ok(cache) = SearchCache::new(index_root, cache_ttl_ms) {
+            let payload = KeywordCachePayload {
+                results: outcome.results.clone(),
+                files_with_matches: outcome.files_with_matches,
+                total_matches: outcome.total_matches,
+                mode: match outcome.mode {
+                    IndexMode::Index => "index".to_string(),
+                    IndexMode::Scan => "scan".to_string(),
+                },
+            };
+            let _ = cache.put(&cache_key, payload);
+        }
+    }
+
+    Ok(outcome)
+}
+
+fn parse_index_mode(mode: &str) -> IndexMode {
+    if mode.eq_ignore_ascii_case("scan") {
+        IndexMode::Scan
+    } else {
+        IndexMode::Index
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn index_search(
     query: &str,
     index_root: &Path,
@@ -1066,6 +1355,7 @@ fn index_search(
     compiled_glob: Option<&CompiledGlob>,
     compiled_exclude: Option<&CompiledGlob>,
     config_exclude_patterns: &[CompiledGlob],
+    changed_filter: Option<&ChangedFiles>,
     fuzzy: bool,
 ) -> Result<SearchOutcome> {
     let candidates = collect_index_candidates(
@@ -1078,6 +1368,7 @@ fn index_search(
         compiled_glob,
         compiled_exclude,
         config_exclude_patterns,
+        changed_filter,
         fuzzy,
     )?;
 
@@ -1128,6 +1419,7 @@ fn scan_search(
     compiled_glob: Option<&CompiledGlob>,
     compiled_exclude: Option<&CompiledGlob>,
     config_exclude_patterns: &[CompiledGlob],
+    changed_filter: Option<&ChangedFiles>,
     regex: Option<&Regex>,
     case_sensitive: bool,
 ) -> Result<SearchOutcome> {
@@ -1154,6 +1446,11 @@ fn scan_search(
             .unwrap_or(&file.path)
             .display()
             .to_string();
+        if let Some(filter) = changed_filter {
+            if !filter.matches_rel_path(&rel_path) {
+                continue;
+            }
+        }
 
         if !matches_file_type(&rel_path, file_type) {
             continue;
@@ -1283,29 +1580,36 @@ fn hybrid_search(
     max_results: usize,
     context: usize,
     file_type: Option<&str>,
+    glob_pattern: Option<&str>,
+    exclude_pattern: Option<&str>,
     compiled_glob: Option<&CompiledGlob>,
     compiled_exclude: Option<&CompiledGlob>,
     config_exclude_patterns: &[CompiledGlob],
+    changed_filter: Option<&ChangedFiles>,
     mode: HybridSearchMode,
     use_cache: bool,
     cache_ttl_ms: u64,
 ) -> Result<SearchOutcome> {
     let index_path = index_root.join(INDEX_DIR);
     let embedding_db_path = index_root.join(".cgrep").join("embeddings.sqlite");
+    let changed_component = changed_filter
+        .map(|f| format!("{}:{}", f.rev(), f.signature()))
+        .filter(|s| !s.is_empty());
 
     // Build cache key
     let cache_key = CacheKey {
-        query: query.to_string(),
+        query: normalize_query(query, true, true),
         mode: mode.to_string(),
         max_results,
         context,
-        file_type: file_type.map(|s| s.to_string()),
-        glob: compiled_glob.map(|_| "set".to_string()),
-        exclude: compiled_exclude.map(|_| "set".to_string()),
+        file_type: file_type.map(str::to_string),
+        glob: glob_pattern.map(str::to_string),
+        exclude: exclude_pattern.map(str::to_string),
         profile: None,
-        index_hash: None,
-        embedding_model: None,
+        index_hash: index_fingerprint(index_root),
+        embedding_model: Some(config.embeddings.model().to_string()),
         search_root: Some(search_root.to_string_lossy().to_string()),
+        changed: changed_component,
     };
 
     // Try cache
@@ -1396,6 +1700,7 @@ fn hybrid_search(
         compiled_glob,
         compiled_exclude,
         config_exclude_patterns,
+        changed_filter,
         false,
     )?;
 
@@ -1759,6 +2064,7 @@ mod tests {
             None,
             &[],
             None,
+            None,
             false,
         )
         .expect("scan");
@@ -1784,6 +2090,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
             Some(&re),
             true,
         )
@@ -1812,8 +2119,20 @@ mod tests {
             .build(false, DEFAULT_WRITER_BUDGET_BYTES)
             .expect("build");
 
-        let outcome = index_search("needle", root, &subdir, 10, 0, None, None, None, &[], false)
-            .expect("index search");
+        let outcome = index_search(
+            "needle",
+            root,
+            &subdir,
+            10,
+            0,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            false,
+        )
+        .expect("index search");
 
         assert_eq!(outcome.results.len(), 1);
         assert_eq!(outcome.results[0].path, "sub.rs");
@@ -1908,6 +2227,7 @@ mod tests {
                 max_total_chars: None,
                 max_context_chars: None,
                 dedupe_context: false,
+                suppress_boilerplate: false,
             },
         );
 
@@ -1925,6 +2245,7 @@ mod tests {
                 max_total_chars: None,
                 max_context_chars: Some(6),
                 dedupe_context: false,
+                suppress_boilerplate: false,
             },
         );
 
@@ -1952,6 +2273,7 @@ mod tests {
                 max_total_chars: Some(25),
                 max_context_chars: None,
                 dedupe_context: false,
+                suppress_boilerplate: false,
             },
         );
 
@@ -1977,6 +2299,7 @@ mod tests {
                 max_total_chars: None,
                 max_context_chars: None,
                 dedupe_context: true,
+                suppress_boilerplate: false,
             },
         );
 

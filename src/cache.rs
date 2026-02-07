@@ -36,6 +36,8 @@ pub struct CacheKey {
     pub embedding_model: Option<String>,
     /// Search root for scoping results
     pub search_root: Option<String>,
+    /// Changed-files filter signature (`rev:hash`) for cache isolation
+    pub changed: Option<String>,
 }
 
 impl CacheKey {
@@ -288,6 +290,7 @@ mod tests {
             index_hash: None,
             embedding_model: None,
             search_root: None,
+            changed: None,
         }
     }
 

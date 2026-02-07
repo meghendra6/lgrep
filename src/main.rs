@@ -60,6 +60,7 @@ fn main() -> Result<()> {
             file_type,
             glob,
             exclude,
+            changed,
             quiet,
             fuzzy,
             no_index,
@@ -77,6 +78,8 @@ fn main() -> Result<()> {
             max_total_chars,
             max_context_chars,
             dedupe_context,
+            path_alias,
+            suppress_boilerplate,
         } => {
             let config = path
                 .as_deref()
@@ -143,6 +146,7 @@ fn main() -> Result<()> {
                 file_type.as_deref(),
                 glob.as_deref(),
                 exclude.as_deref(),
+                changed.as_deref(),
                 quiet,
                 fuzzy,
                 no_index,
@@ -158,6 +162,8 @@ fn main() -> Result<()> {
                 max_total_chars,
                 max_context_chars,
                 dedupe_context,
+                path_alias,
+                suppress_boilerplate,
             )?;
         }
         Commands::Symbols {
@@ -167,6 +173,7 @@ fn main() -> Result<()> {
             file_type,
             glob,
             exclude,
+            changed,
             quiet,
         } => {
             query::symbols::run(
@@ -176,6 +183,7 @@ fn main() -> Result<()> {
                 file_type.as_deref(),
                 glob.as_deref(),
                 exclude.as_deref(),
+                changed.as_deref(),
                 quiet,
                 global_format,
                 compact,
@@ -191,8 +199,16 @@ fn main() -> Result<()> {
             name,
             path,
             max_results,
+            changed,
         } => {
-            query::references::run(&name, path.as_deref(), max_results, global_format, compact)?;
+            query::references::run(
+                &name,
+                path.as_deref(),
+                max_results,
+                changed.as_deref(),
+                global_format,
+                compact,
+            )?;
         }
         Commands::Dependents { file } => {
             query::dependents::run(&file, global_format, compact)?;

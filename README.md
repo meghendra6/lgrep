@@ -101,10 +101,13 @@ Common flags:
     --exclude <pattern>  Exclude pattern
 -q, --quiet              Suppress statistics output
 -f, --fuzzy              Fuzzy BM25 matching (index mode only)
+    --changed [<rev>]    Limit to files changed since revision (default: HEAD)
     --max-chars-per-snippet <n>  Cap snippet size per result
     --max-context-chars <n>      Cap context size per result
     --max-total-chars <n>        Cap total returned characters
     --dedupe-context             Remove duplicated context lines
+    --path-alias                 Use p1/p2 path aliases in json2 + meta lookup
+    --suppress-boilerplate       Suppress repeated import/header boilerplate
 ```
 
 Mode selection:
@@ -125,7 +128,7 @@ Note: In keyword mode, if no index exists, cgrep falls back to scan mode.
 
 Agent/cache:
 ```
-    --agent-cache        Cache hybrid/semantic results
+    --agent-cache        Cache search results for agent loops (keyword/hybrid/semantic)
     --cache-ttl <ms>     Cache TTL in milliseconds (default: 600000)
     --context-pack <n>   Merge overlapping/adjacent context windows
     --profile <name>     Apply preset profile (human, agent, fast)
@@ -140,6 +143,7 @@ Symbols:
 -t, --file-type <type>   File type filter
 -g, --glob <pattern>     Glob filter
     --exclude <pattern>  Exclude pattern
+    --changed [<rev>]    Limit to files changed since revision (default: HEAD)
 -q, --quiet              Suppress statistics output
 ```
 
@@ -147,6 +151,7 @@ References:
 ```
 -p, --path <path>        Path to search in
 -m, --max-results <n>    Maximum results (default: 50)
+    --changed [<rev>]    Limit to files changed since revision (default: HEAD)
 ```
 
 Index:
@@ -190,6 +195,7 @@ elapsed_ms, files_with_matches, total_matches
 cache_hit, context_pack
 truncated, dropped_results
 max_total_chars, max_chars_per_snippet, max_context_chars, dedupe_context
+path_alias, suppress_boilerplate, changed_rev, path_aliases
 ```
 
 ## Embeddings (optional)

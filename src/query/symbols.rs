@@ -11,6 +11,7 @@ use std::time::Instant;
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::{FileScanner, ScannedFile};
 use crate::parser::symbols::SymbolExtractor;
+use crate::query::changed_files::ChangedFiles;
 use crate::query::index_filter::{find_files_with_symbol, read_scanned_files};
 use cgrep::config::Config;
 use cgrep::filters::{
@@ -39,6 +40,7 @@ pub fn run(
     file_type: Option<&str>,
     glob_pattern: Option<&str>,
     exclude_pattern: Option<&str>,
+    changed: Option<&str>,
     quiet: bool,
     format: OutputFormat,
     compact: bool,
@@ -63,6 +65,9 @@ pub fn run(
     let root = get_root_with_index(std::env::current_dir()?);
     let extractor = SymbolExtractor::new();
     let name_lower = name.to_lowercase();
+    let changed_filter = changed
+        .map(|rev| ChangedFiles::from_scope(&root, rev))
+        .transpose()?;
 
     // Try to use index for fast file filtering first
     let files: Vec<ScannedFile> = match find_files_with_symbol(&root, name)? {
@@ -85,6 +90,11 @@ pub fn run(
             .to_string();
 
         // Apply path filters
+        if let Some(filter) = changed_filter.as_ref() {
+            if !filter.matches_rel_path(&rel_path) {
+                continue;
+            }
+        }
         if !matches_file_type(&rel_path, file_type) {
             continue;
         }

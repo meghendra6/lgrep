@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::cli::OutputFormat;
 use crate::indexer::scanner::FileScanner;
+use crate::query::changed_files::ChangedFiles;
 use crate::query::index_filter::{find_files_with_content, read_scanned_files};
 use cgrep::output::print_json;
 use cgrep::utils::get_root_with_index;
@@ -27,6 +28,7 @@ pub fn run(
     name: &str,
     path: Option<&str>,
     max_results: usize,
+    changed: Option<&str>,
     format: OutputFormat,
     compact: bool,
 ) -> Result<()> {
@@ -41,6 +43,9 @@ pub fn run(
             scanner.scan()?
         }
     };
+    let changed_filter = changed
+        .map(|rev| ChangedFiles::from_scope(&root, rev))
+        .transpose()?;
 
     // Pattern to match symbol with word boundaries
     let pattern = format!(r"\b{}\b", regex::escape(name));
@@ -55,6 +60,11 @@ pub fn run(
             .unwrap_or(&file.path)
             .display()
             .to_string();
+        if let Some(filter) = changed_filter.as_ref() {
+            if !filter.matches_rel_path(&rel_path) {
+                continue;
+            }
+        }
 
         for (line_num, line) in file.content.lines().enumerate() {
             if let Some(mat) = re.find(line) {

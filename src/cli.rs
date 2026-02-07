@@ -30,7 +30,7 @@ pub struct Cli {
 pub enum OutputFormat {
     Text,
     Json,
-    /// Structured JSON for AI agents (currently identical to json)
+    /// Structured JSON for AI agents (`meta` + `results`)
     Json2,
 }
 
@@ -77,6 +77,10 @@ pub enum Commands {
         /// Exclude files matching pattern
         #[arg(long)]
         exclude: Option<String>,
+
+        /// Limit search to files changed since revision (default: HEAD)
+        #[arg(long, num_args = 0..=1, default_missing_value = "HEAD")]
+        changed: Option<String>,
 
         /// Suppress statistics output
         #[arg(short = 'q', long)]
@@ -145,6 +149,14 @@ pub enum Commands {
         /// Remove duplicated context lines across results
         #[arg(long)]
         dedupe_context: bool,
+
+        /// Use short path aliases (p1, p2, ...) in json2 output with lookup table in meta
+        #[arg(long)]
+        path_alias: bool,
+
+        /// Suppress repeated boilerplate lines (imports/headers) in snippets and context
+        #[arg(long)]
+        suppress_boilerplate: bool,
     },
 
     /// Search for symbols (functions, classes, etc.)
@@ -171,6 +183,10 @@ pub enum Commands {
         /// Exclude files matching pattern
         #[arg(long)]
         exclude: Option<String>,
+
+        /// Limit symbol search to files changed since revision (default: HEAD)
+        #[arg(long, num_args = 0..=1, default_missing_value = "HEAD")]
+        changed: Option<String>,
 
         /// Suppress statistics output
         #[arg(short = 'q', long)]
@@ -203,6 +219,10 @@ pub enum Commands {
         /// Maximum number of results
         #[arg(short, long, default_value = "50")]
         max_results: usize,
+
+        /// Limit references to files changed since revision (default: HEAD)
+        #[arg(long, num_args = 0..=1, default_missing_value = "HEAD")]
+        changed: Option<String>,
     },
 
     /// Find files that depend on a given file
