@@ -31,6 +31,7 @@ struct SymbolResult {
 }
 
 /// Run the symbols command
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     name: &str,
     symbol_type: Option<&str>,

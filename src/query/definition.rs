@@ -128,14 +128,14 @@ pub fn run(name: &str, format: OutputFormat, compact: bool) -> Result<()> {
                     let end = (start + 3).min(lines.len());
 
                     println!();
-                    for i in start..end {
+                    for (i, line) in lines.iter().enumerate().take(end).skip(start) {
                         let line_num = format!("{:4}", i + 1);
                         let prefix = if i + 1 == symbol.line {
                             format!("{} ", "➜".green())
                         } else {
                             "  ".to_string()
                         };
-                        println!("    {} {} {}", prefix, line_num.dimmed(), lines[i]);
+                        println!("    {} {} {}", prefix, line_num.dimmed(), line);
                     }
                     println!();
                 }

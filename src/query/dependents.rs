@@ -40,7 +40,7 @@ pub fn run(file: &str, format: OutputFormat, compact: bool) -> Result<()> {
     };
 
     // Patterns to match imports
-    let patterns = vec![
+    let patterns = [
         // JavaScript/TypeScript: import ... from 'path' or require('path')
         format!(
             r#"(?:import|from|require)\s*[\(\s]?['"](?:[./]*{})['"]"#,
