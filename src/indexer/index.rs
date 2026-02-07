@@ -117,7 +117,7 @@ fn create_embedding_provider(
     let provider_type = config.embeddings.provider();
     let provider_result: Result<Box<dyn EmbeddingProvider>> = match provider_type {
         EmbeddingProviderType::Builtin => EmbeddingProviderConfig::from_env()
-            .and_then(|provider_config| FastEmbedder::new(provider_config))
+            .and_then(FastEmbedder::new)
             .map(|provider| Box::new(provider) as Box<dyn EmbeddingProvider>),
         EmbeddingProviderType::Dummy => Ok(Box::new(DummyProvider::new(DEFAULT_EMBEDDING_DIM))),
         EmbeddingProviderType::Command => Ok(Box::new(CommandProvider::new(
@@ -326,7 +326,7 @@ fn index_embeddings(
             let file_hash = meta.hash.clone();
             let last_modified = (meta.mtime / 1_000_000_000) as i64;
 
-            if text.as_bytes().len() > max_file_bytes {
+            if text.len() > max_file_bytes {
                 storage.replace_file_symbols(path, &file_hash, last_modified, &[])?;
                 stats.files_embedded += 1;
                 continue;
@@ -344,10 +344,7 @@ fn index_embeddings(
                 continue;
             }
 
-            let symbols = match extractor.extract(&text, &lang_str) {
-                Ok(symbols) => symbols,
-                Err(_) => Vec::new(),
-            };
+            let symbols = extractor.extract(&text, &lang_str).unwrap_or_default();
 
             let symbols = filter_symbols(symbols, allowed_kinds.as_ref(), max_symbols_per_file);
 
@@ -465,7 +462,7 @@ struct IndexMetadata {
     files: HashMap<String, FileMetadata>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct FileMetadata {
     mtime: u64,
@@ -473,18 +470,6 @@ struct FileMetadata {
     hash: String,
     symbols: String,
     is_binary: bool,
-}
-
-impl Default for FileMetadata {
-    fn default() -> Self {
-        Self {
-            mtime: 0,
-            size: 0,
-            hash: String::new(),
-            symbols: String::new(),
-            is_binary: false,
-        }
-    }
 }
 
 impl FileMetadata {
@@ -554,7 +539,7 @@ fn read_text_chunks(path: &Path, max_doc_bytes: usize) -> Result<ReadOutcome> {
 }
 
 fn read_text_chunks_from_bytes(bytes: &[u8], max_doc_bytes: usize) -> Result<ReadOutcome> {
-    if bytes.iter().any(|&b| b == 0) {
+    if bytes.contains(&0) {
         return Ok(ReadOutcome::Binary { hash: None });
     }
 
@@ -734,12 +719,10 @@ fn truncate_to_chars(input: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
-    let mut count = 0usize;
-    for (idx, _) in input.char_indices() {
+    for (count, (idx, _)) in input.char_indices().enumerate() {
         if count == max_chars {
             return input[..idx].to_string();
         }
-        count += 1;
     }
     input.to_string()
 }
@@ -1336,7 +1319,7 @@ mod tests {
         let reader = index.reader().expect("reader");
         let searcher = reader.searcher();
         let path_term =
-            Term::from_field_text(path_exact_field, &file_path.to_string_lossy().to_string());
+            Term::from_field_text(path_exact_field, file_path.to_string_lossy().as_ref());
         let doc_type_term = Term::from_field_text(doc_type_field, "file");
         let query = tantivy::query::BooleanQuery::new(vec![
             (

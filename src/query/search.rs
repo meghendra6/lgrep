@@ -134,6 +134,7 @@ struct SearchOutcome {
 }
 
 /// Run the search command
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     query: &str,
     path: Option<&str>,
@@ -358,11 +359,7 @@ pub fn run(
                         .unwrap_or_default();
 
                     if use_color {
-                        println!(
-                            "{}{}",
-                            colorize_path(&result.path, use_color),
-                            line_info
-                        );
+                        println!("{}{}", colorize_path(&result.path, use_color), line_info);
                     } else {
                         println!("{}{}", result.path, line_info);
                     }
@@ -437,7 +434,7 @@ fn get_context_lines(
     };
 
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let lines: Vec<String> = reader.lines().map_while(|line| line.ok()).collect();
 
     let start = line_num.saturating_sub(context + 1);
     let end = (line_num + context).min(lines.len());
@@ -484,6 +481,7 @@ struct IndexCandidate {
     symbol_end: Option<u32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_index_candidates(
     query: &str,
     index_root: &Path,
@@ -654,6 +652,7 @@ fn collect_index_candidates(
     Ok(candidates)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn index_search(
     query: &str,
     index_root: &Path,
@@ -715,6 +714,7 @@ fn index_search(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_search(
     query: &str,
     root: &std::path::Path,
@@ -869,6 +869,7 @@ fn scan_search(
 }
 
 /// Hybrid search combining BM25 with vector embeddings
+#[allow(clippy::too_many_arguments)]
 fn hybrid_search(
     query: &str,
     index_root: &Path,
@@ -1021,7 +1022,7 @@ fn hybrid_search(
                 let provider_type = config.embeddings.provider();
                 let provider_result: Result<Box<dyn EmbeddingProvider>> = match provider_type {
                     EmbeddingProviderType::Builtin => EmbeddingProviderConfig::from_env()
-                        .and_then(|provider_config| FastEmbedder::new(provider_config))
+                        .and_then(FastEmbedder::new)
                         .map(|provider| Box::new(provider) as Box<dyn EmbeddingProvider>),
                     EmbeddingProviderType::Dummy => {
                         Ok(Box::new(DummyProvider::new(DEFAULT_EMBEDDING_DIM)))
