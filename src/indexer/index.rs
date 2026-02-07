@@ -102,6 +102,8 @@ fn create_embedding_provider(
     // isn't configured/available.
     let has_embeddings_config = config.embeddings.enabled.is_some()
         || config.embeddings.provider.is_some()
+        || config.embeddings.batch_size.is_some()
+        || config.embeddings.max_chars.is_some()
         || config.embeddings.model.is_some()
         || config.embeddings.command.is_some()
         || config.embeddings.chunk_lines.is_some()
@@ -116,9 +118,12 @@ fn create_embedding_provider(
 
     let provider_type = config.embeddings.provider();
     let provider_result: Result<Box<dyn EmbeddingProvider>> = match provider_type {
-        EmbeddingProviderType::Builtin => EmbeddingProviderConfig::from_env()
-            .and_then(FastEmbedder::new)
-            .map(|provider| Box::new(provider) as Box<dyn EmbeddingProvider>),
+        EmbeddingProviderType::Builtin => EmbeddingProviderConfig::from_overrides(
+            config.embeddings.batch_size(),
+            config.embeddings.max_chars(),
+        )
+        .and_then(FastEmbedder::new)
+        .map(|provider| Box::new(provider) as Box<dyn EmbeddingProvider>),
         EmbeddingProviderType::Dummy => Ok(Box::new(DummyProvider::new(DEFAULT_EMBEDDING_DIM))),
         EmbeddingProviderType::Command => Ok(Box::new(CommandProvider::new(
             config.embeddings.command().to_string(),
@@ -228,6 +233,67 @@ fn flush_embedding_batch(
     Ok(())
 }
 
+fn embed_large_file_symbols(
+    provider: &mut dyn EmbeddingProvider,
+    path: &str,
+    file_hash: &str,
+    last_modified: i64,
+    symbol_ids: &[String],
+    texts: &[String],
+    symbols: &[SymbolEmbeddingMeta],
+    storage: &mut EmbeddingStorage,
+    stats: &mut EmbeddingIndexStats,
+) -> Result<()> {
+    let embed_batch_size = provider.batch_size().max(1);
+    let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+
+    for chunk in texts.chunks(embed_batch_size) {
+        let chunk_vectors = provider.embed_texts(chunk)?;
+        if chunk_vectors.len() != chunk.len() {
+            anyhow::bail!(
+                "Embedding provider returned {} vectors for {} inputs",
+                chunk_vectors.len(),
+                chunk.len()
+            );
+        }
+        vectors.extend(chunk_vectors);
+    }
+
+    if vectors.len() != symbols.len() {
+        anyhow::bail!(
+            "Embedding provider returned {} vectors for {} symbol texts",
+            vectors.len(),
+            symbols.len()
+        );
+    }
+
+    if let Some(first) = vectors.first() {
+        let dimension = first.len();
+        if dimension > 0 {
+            let _ = storage.set_meta("dimension", &dimension.to_string());
+        }
+    }
+
+    let mut inputs: Vec<SymbolEmbeddingInput<'_>> = Vec::with_capacity(symbols.len());
+    for (meta, embedding) in symbols.iter().zip(vectors.iter()) {
+        inputs.push(SymbolEmbeddingInput {
+            symbol_id: meta.symbol_id.as_str(),
+            lang: meta.lang.as_str(),
+            symbol_kind: meta.kind.as_str(),
+            symbol_name: meta.name.as_str(),
+            start_line: meta.start_line,
+            end_line: meta.end_line,
+            content_hash: meta.content_hash.as_str(),
+            embedding: embedding.as_slice(),
+        });
+    }
+
+    storage.sync_file_symbols(path, file_hash, last_modified, symbol_ids, &inputs)?;
+    stats.files_embedded += 1;
+    stats.symbols_embedded += inputs.len();
+    Ok(())
+}
+
 fn index_embeddings(
     root: &Path,
     mode: EmbeddingsMode,
@@ -267,7 +333,7 @@ fn index_embeddings(
     let _ = storage.set_meta("provider", provider_label);
     // Best-effort: record model early (dimension becomes known after first embed call).
     let _ = storage.set_meta("model", provider.model_id());
-    let batch_size = provider.batch_size();
+    let batch_size = provider.batch_size().max(1);
     let max_file_bytes = config.embeddings.max_file_bytes();
     let extractor = SymbolExtractor::new();
     let preview_lines = config.embeddings.symbol_preview_lines();
@@ -405,6 +471,28 @@ fn index_embeddings(
             if texts.is_empty() {
                 storage.sync_file_symbols(path, &file_hash, last_modified, &symbol_ids, &[])?;
                 stats.files_embedded += 1;
+                continue;
+            }
+
+            if texts.len() > batch_size {
+                flush_embedding_batch(
+                    provider.as_mut(),
+                    &mut batch_texts,
+                    &mut batch_entries,
+                    &mut storage,
+                    &mut stats,
+                )?;
+                embed_large_file_symbols(
+                    provider.as_mut(),
+                    path,
+                    &file_hash,
+                    last_modified,
+                    &symbol_ids,
+                    &texts,
+                    &symbol_meta,
+                    &mut storage,
+                    &mut stats,
+                )?;
                 continue;
             }
 

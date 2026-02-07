@@ -14,7 +14,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 const DEFAULT_FASTEMBED_MODEL: &str = "minilm";
-const DEFAULT_FASTEMBED_BATCH_SIZE: usize = 512;
+const DEFAULT_FASTEMBED_BATCH_SIZE: usize = 4;
 const MAX_FASTEMBED_BATCH_SIZE: usize = 1024;
 const DEFAULT_FASTEMBED_MAX_CHARS: usize = 2000;
 const DEFAULT_COMMAND_BATCH_SIZE: usize = 64;
@@ -45,23 +45,25 @@ pub struct EmbeddingProviderConfig {
 
 impl EmbeddingProviderConfig {
     pub fn from_env() -> Result<Self> {
-        let model = parse_model_env()?;
-        let mut batch_size = parse_usize_env("FASTEMBED_BATCH_SIZE", DEFAULT_FASTEMBED_BATCH_SIZE)?;
-        if batch_size == 0 {
-            batch_size = DEFAULT_FASTEMBED_BATCH_SIZE;
-        }
-        if batch_size > MAX_FASTEMBED_BATCH_SIZE {
-            eprintln!(
-                "Warning: FASTEMBED_BATCH_SIZE={} exceeds max {}; clamping.",
-                batch_size, MAX_FASTEMBED_BATCH_SIZE
-            );
-            batch_size = MAX_FASTEMBED_BATCH_SIZE;
-        }
+        Self::from_overrides(None, None)
+    }
 
-        let mut max_chars = parse_usize_env("FASTEMBED_MAX_CHARS", DEFAULT_FASTEMBED_MAX_CHARS)?;
-        if max_chars == 0 {
-            max_chars = DEFAULT_FASTEMBED_MAX_CHARS;
-        }
+    pub fn from_overrides(
+        batch_size_override: Option<usize>,
+        max_chars_override: Option<usize>,
+    ) -> Result<Self> {
+        let model = parse_model_env()?;
+        let batch_size = parse_usize_env(
+            "FASTEMBED_BATCH_SIZE",
+            batch_size_override.unwrap_or(DEFAULT_FASTEMBED_BATCH_SIZE),
+        )
+        .map(normalize_batch_size)?;
+
+        let max_chars = parse_usize_env(
+            "FASTEMBED_MAX_CHARS",
+            max_chars_override.unwrap_or(DEFAULT_FASTEMBED_MAX_CHARS),
+        )
+        .map(normalize_max_chars)?;
 
         let normalize = parse_bool_env("FASTEMBED_NORMALIZE", true)?;
 
@@ -438,6 +440,28 @@ fn parse_bool_env(name: &str, default: bool) -> Result<bool> {
     }
 }
 
+fn normalize_batch_size(mut batch_size: usize) -> usize {
+    if batch_size == 0 {
+        batch_size = DEFAULT_FASTEMBED_BATCH_SIZE;
+    }
+    if batch_size > MAX_FASTEMBED_BATCH_SIZE {
+        eprintln!(
+            "Warning: FASTEMBED_BATCH_SIZE={} exceeds max {}; clamping.",
+            batch_size, MAX_FASTEMBED_BATCH_SIZE
+        );
+        batch_size = MAX_FASTEMBED_BATCH_SIZE;
+    }
+    batch_size
+}
+
+fn normalize_max_chars(max_chars: usize) -> usize {
+    if max_chars == 0 {
+        DEFAULT_FASTEMBED_MAX_CHARS
+    } else {
+        max_chars
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +527,28 @@ mod tests {
         assert!(err
             .to_string()
             .contains("Embedding provider returned 2 vectors"));
+    }
+
+    #[test]
+    fn test_normalize_batch_size_zero_uses_default() {
+        assert_eq!(
+            normalize_batch_size(0),
+            DEFAULT_FASTEMBED_BATCH_SIZE,
+            "zero batch size should fallback to default"
+        );
+    }
+
+    #[test]
+    fn test_normalize_batch_size_clamps_max() {
+        assert_eq!(
+            normalize_batch_size(MAX_FASTEMBED_BATCH_SIZE + 1),
+            MAX_FASTEMBED_BATCH_SIZE
+        );
+    }
+
+    #[test]
+    fn test_normalize_max_chars_zero_uses_default() {
+        assert_eq!(normalize_max_chars(0), DEFAULT_FASTEMBED_MAX_CHARS);
     }
 
     #[test]
